@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /Users/sauvinci/repo/vila-u-main/prisma /Users/sauvinci/repo/vila-u-main/lib /Users/sauvinci/repo/vila-u-main/components /Users/sauvinci/repo/vila-u-main/hooks /Users/sauvinci/repo/vila-u-main/types /Users/sauvinci/repo/vila-u-main/utils /Users/sauvinci/repo/vila-u-main/context /Users/sauvinci/repo/vila-u-main/store /Users/sauvinci/repo/vila-u-main/middleware* 2)",
+      "Bash(/dev/null -type f)",
+      "Bash(python3 -c \"import fitz; doc = fitz.open\\(''''/Users/sauvinci/Zotero/storage/RU4ZNVBZ/Zhao 等 - 2025 - CoT-VLA Visual Chain-of-Thought Reasoning for Vision-Language-Action Models.pdf''''\\); print\\(''''页数:'''', doc.page_count\\)\")",
+      "Bash(python3 -m pip list)",
+      "Bash(brew list:*)",
+      "Bash(pip3 install:*)",
+      "Bash(python3 -c \"from pdfminer.high_level import extract_text; text = extract_text\\(''''/Users/sauvinci/Zotero/storage/RU4ZNVBZ/Zhao 等 - 2025 - CoT-VLA Visual Chain-of-Thought Reasoning for Vision-Language-Action Models.pdf''''\\); print\\(text[:8000]\\)\")",
+      "Bash(python3:*)"
+    ]
+  }
+}
