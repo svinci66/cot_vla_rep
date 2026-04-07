@@ -100,40 +100,32 @@ except Exception as e:
     traceback.print_exc()
     exit(1)
 
-# 4. 测试前向传播
-print("\n[4/5] Testing forward pass...")
+# 4. 测试前向传播（使用 predict_action 方法）
+print("\n[4/5] Testing forward pass with predict_action...")
 try:
     from vila_u.constants import DEFAULT_IMAGE_TOKEN
 
     # 构建输入
     instruction = "pick up the bowl"
-    prompt = f"{DEFAULT_IMAGE_TOKEN}\n{instruction}"
 
-    # Tokenize with attention_mask
-    inputs = tokenizer(prompt, return_tensors="pt", padding=True)
-    input_ids = inputs.input_ids.to('cuda')
-    attention_mask = inputs.attention_mask.to('cuda')
+    # 创建测试图像（numpy格式）
+    import numpy as np
+    test_image_np = np.random.randint(0, 255, (256, 256, 3), dtype=np.uint8)
 
-    print(f"  - Prompt: {prompt}")
-    print(f"  - Input IDs shape: {input_ids.shape}")
-    print(f"  - Attention mask shape: {attention_mask.shape}")
+    print(f"  - Instruction: {instruction}")
+    print(f"  - Image shape: {test_image_np.shape}")
 
-    # 前向传播
-    with torch.no_grad():
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            images=image_tensor,
-            output_hidden_states=True,
-            return_dict=True,
-        )
+    # 使用 predict_action 方法（内部处理前向传播）
+    actions = model.predict_action(
+        image=test_image_np,
+        instruction=instruction,
+        image_processor=image_processor,
+    )
 
     print(f"✓ Forward pass successful!")
-    print(f"  - Output type: {type(outputs)}")
-    print(f"  - Has hidden_states: {hasattr(outputs, 'hidden_states')}")
-    if hasattr(outputs, 'hidden_states'):
-        print(f"  - Number of layers: {len(outputs.hidden_states)}")
-        print(f"  - Last hidden state shape: {outputs.hidden_states[-1].shape}")
+    print(f"  - Actions shape: {actions.shape}")
+    print(f"  - Expected shape: ({ACTION_CHUNK_SIZE}, {ACTION_DIM})")
+    print(f"  - Actions range: [{actions.min():.3f}, {actions.max():.3f}]")
 
 except Exception as e:
     print(f"✗ Error in forward pass: {e}")
@@ -141,19 +133,9 @@ except Exception as e:
     traceback.print_exc()
     exit(1)
 
-# 5. 测试动作预测
-print("\n[5/5] Testing action prediction...")
+# 5. 验证动作预测结果
+print("\n[5/5] Validating action prediction results...")
 try:
-    # 使用 predict_action 方法
-    test_image_np = np.random.randint(0, 255, (256, 256, 3), dtype=np.uint8)
-
-    actions = model.predict_action(
-        image=test_image_np,
-        instruction=instruction,
-        image_processor=image_processor,
-    )
-
-    print(f"✓ Action prediction successful!")
     print(f"  - Actions shape: {actions.shape}")
     print(f"  - Expected shape: ({ACTION_CHUNK_SIZE}, {ACTION_DIM})")
     print(f"  - Actions range: [{actions.min():.3f}, {actions.max():.3f}]")
@@ -170,7 +152,7 @@ try:
     print(f"\n✓ All validations passed!")
 
 except Exception as e:
-    print(f"✗ Error in action prediction: {e}")
+    print(f"✗ Error in validation: {e}")
     import traceback
     traceback.print_exc()
     exit(1)
