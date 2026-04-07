@@ -34,3 +34,8 @@ class VILAUConfig(PretrainedConfig):
         self.mm_use_im_start_end = mm_use_im_start_end
         self.mm_use_vi_start_end = mm_use_vi_start_end
         self.mm_use_im_patch_token = mm_use_im_patch_token
+
+        # ===== Action Prediction =====
+        self.action_dim = kwargs.pop("action_dim", 7)
+        self.action_chunk_size = kwargs.pop("action_chunk_size", 10)
+        self.use_action_prediction = kwargs.pop("use_action_prediction", False)

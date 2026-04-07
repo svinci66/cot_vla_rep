@@ -52,6 +52,21 @@ class VILAUMetaModel(ABC):
         self.mm_projector = build_mm_projector(mm_projector_cfg, config)
 
         self.post_config()
+
+        # ===== Action Prediction Head =====
+        if getattr(config, "use_action_prediction", False):
+            from torch import nn
+            action_out_dim = config.action_chunk_size * config.action_dim
+            self.action_head = nn.Linear(
+                config.hidden_size,
+                action_out_dim,
+                bias=True,
+            )
+            # 小值初始化，避免训练初期梯度爆炸
+            nn.init.normal_(self.action_head.weight, std=0.02)
+            nn.init.zeros_(self.action_head.bias)
+            print(f"[Action Head] Initialized: {config.hidden_size} -> {action_out_dim}")
+
         self.is_loaded = True
 
         assert (
@@ -684,3 +699,37 @@ class VILAUMetaForCausalLM(ABC):
         if generation_config.eos_token_id is None:
             generation_config.eos_token_id = self.tokenizer.convert_tokens_to_ids(infer_stop_tokens(self.tokenizer))
         return generation_config
+
+    # ===== Action Prediction Methods =====
+    def predict_actions(
+        self,
+        hidden_states: torch.Tensor,
+        action_token_position: int = -1,
+    ) -> torch.Tensor:
+        """
+        从 LLM 隐层状态预测动作序列。
+
+        Args:
+            hidden_states: [B, seq_len, hidden_size] LLM 输出的隐层状态
+            action_token_position: 用于预测动作的 token 位置（默认 -1 表示最后一个）
+
+        Returns:
+            actions: [B, ACTION_CHUNK_SIZE, ACTION_DIM] 预测的动作序列
+        """
+        if not hasattr(self, 'action_head'):
+            raise RuntimeError("Action head not initialized. Set use_action_prediction=True in config.")
+
+        B = hidden_states.shape[0]
+        # 提取指定位置的隐层状态
+        act_hidden = hidden_states[:, action_token_position, :]  # [B, hidden_size]
+
+        # 通过动作头解码
+        raw = self.action_head(act_hidden)  # [B, chunk_size * action_dim]
+
+        # Reshape 为动作序列
+        actions = raw.view(B, self.config.action_chunk_size, self.config.action_dim)
+
+        # Tanh 激活，限制到 [-1, 1]
+        actions = torch.tanh(actions)
+
+        return actions

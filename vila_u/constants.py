@@ -14,3 +14,10 @@ DEFAULT_VI_END_TOKEN = "<vi_end>"
 IMAGE_PLACEHOLDER = "<image-placeholder>"
 
 SENTINEL_TOKEN = "<vila/sentinel>"
+
+# ===== Action Prediction (方案A - 无CoT) =====
+ACTION_DIM = 7              # 7-DoF 动作: [dx, dy, dz, droll, dpitch, dyaw, gripper]
+ACTION_CHUNK_SIZE = 10      # 每次预测的动作步数
+ACTION_HORIZON = 10         # 动作预测的时间跨度
+ACTION_MIN = -1.0           # 动作归一化最小值
+ACTION_MAX = 1.0            # 动作归一化最大值
