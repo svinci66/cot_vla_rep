@@ -12,7 +12,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-from vila_u.eval.trajectory_generator import create_trajectory_generator
+from vila_u.eval.trajectory_generator import create_trajectory_generator, TrajectoryGenerator
 from vila_u.utils.libero_saver import LiberoSaver
 
 
