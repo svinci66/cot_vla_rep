@@ -55,8 +55,16 @@ try:
     model.config.action_dim = ACTION_DIM
     model.config.action_chunk_size = ACTION_CHUNK_SIZE
 
-    # 初始化动作头
-    model.init_vlm(model.config)
+    # 手动初始化动作头（因为模型已经加载，init_vlm 会跳过）
+    from torch import nn
+    action_out_dim = ACTION_CHUNK_SIZE * ACTION_DIM
+    model.action_head = nn.Linear(
+        model.config.hidden_size,
+        action_out_dim,
+        bias=True,
+    ).to('cuda', dtype=model.dtype)
+    nn.init.normal_(model.action_head.weight, std=0.02)
+    nn.init.zeros_(model.action_head.bias)
 
     print(f"✓ Action head initialized!")
     print(f"  - Has action_head: {hasattr(model, 'action_head')}")
@@ -101,16 +109,20 @@ try:
     instruction = "pick up the bowl"
     prompt = f"{DEFAULT_IMAGE_TOKEN}\n{instruction}"
 
-    # Tokenize
-    input_ids = tokenizer(prompt, return_tensors="pt", padding=True).input_ids.to('cuda')
+    # Tokenize with attention_mask
+    inputs = tokenizer(prompt, return_tensors="pt", padding=True)
+    input_ids = inputs.input_ids.to('cuda')
+    attention_mask = inputs.attention_mask.to('cuda')
 
     print(f"  - Prompt: {prompt}")
     print(f"  - Input IDs shape: {input_ids.shape}")
+    print(f"  - Attention mask shape: {attention_mask.shape}")
 
     # 前向传播
     with torch.no_grad():
         outputs = model(
             input_ids=input_ids,
+            attention_mask=attention_mask,
             images=image_tensor,
             output_hidden_states=True,
             return_dict=True,
