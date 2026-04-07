@@ -794,16 +794,19 @@ class VILAUMetaForCausalLM(ABC):
         # 构建包含图像 token 的提示
         prompt = f"{DEFAULT_IMAGE_TOKEN}\n{instruction}"
 
-        # Tokenize
-        input_ids = self.tokenizer(
+        # Tokenize with attention_mask
+        inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
             padding=True,
-        ).input_ids.to(device)
+        )
+        input_ids = inputs.input_ids.to(device)
+        attention_mask = inputs.attention_mask.to(device)
 
         # 3. 前向传播获取隐层状态
         outputs = self(
             input_ids=input_ids,
+            attention_mask=attention_mask,
             images=image_tensor,
             output_hidden_states=True,
             return_dict=True,
