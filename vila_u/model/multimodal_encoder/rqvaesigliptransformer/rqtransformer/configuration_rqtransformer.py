@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from transformers import PretrainedConfig
 
 
@@ -15,7 +15,7 @@ class AttentionBlockConfig:
 @dataclass
 class AttentionStackConfig:
     n_layer: int = 6
-    block: AttentionBlockConfig = AttentionBlockConfig()
+    block: AttentionBlockConfig = field(default_factory=AttentionBlockConfig)
 
 
 class RQTransformerConfig(PretrainedConfig):
