@@ -160,15 +160,18 @@ class ActionPredictionTrainer:
         prompts = [f"{DEFAULT_IMAGE_TOKEN}\n{inst}" for inst in instructions]
 
         # 2. Tokenize 文本
-        input_ids = model.tokenizer(
+        inputs = model.tokenizer(
             prompts,
             return_tensors="pt",
             padding=True,
-        ).input_ids.to(self.device)
+        )
+        input_ids = inputs.input_ids.to(self.device)
+        attention_mask = inputs.attention_mask.to(self.device)
 
         # 3. 前向传播
         outputs = model(
             input_ids=input_ids,
+            attention_mask=attention_mask,
             images=observations,
             output_hidden_states=True,
             return_dict=True,
