@@ -2,7 +2,12 @@
 测试 Step 3: 验证 LIBERO 数据加载器
 """
 import sys
-sys.path.insert(0, '/Users/sauvinci/repo/vila-u-main')
+import os
+
+# 自动获取项目根目录
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+sys.path.insert(0, project_root)
 
 import torch
 from torch.utils.data import DataLoader
