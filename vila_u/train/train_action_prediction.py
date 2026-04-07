@@ -71,10 +71,8 @@ class ActionPredictionTrainer:
         print(f"Loading model from {self.model_path}...")
 
         # 加载预训练模型
-        model, tokenizer, image_processor, context_len = load_pretrained_model(
+        tokenizer, model, image_processor, context_len = load_pretrained_model(
             model_path=self.model_path,
-            model_base=None,
-            model_name="vila-u",
             device_map=self.device,
         )
 
@@ -91,7 +89,8 @@ class ActionPredictionTrainer:
             model.init_vlm(config)
 
         # 冻结视觉编码器
-        for param in model.vision_tower.parameters():
+        vision_tower = model.get_vision_tower()
+        for param in vision_tower.parameters():
             param.requires_grad = False
 
         print(f"✓ Model loaded with action prediction enabled")
@@ -154,26 +153,34 @@ class ActionPredictionTrainer:
         instructions = batch['instructions']  # List[str]
         action_labels = batch['action_labels'].to(self.device)  # [B, 10, 7]
 
-        # TODO: 这里需要实现完整的前向传播
-        # 1. 编码图像和文本
-        # 2. 通过 LLM 获取隐层状态
-        # 3. 使用动作头预测动作
-        # 4. 计算 L1 损失
+        # 1. 构建输入文本（添加图像占位符）
+        from vila_u.constants import DEFAULT_IMAGE_TOKEN
 
-        # 占位符实现（需要根据实际 VILA-U API 调整）
-        # outputs = model(
-        #     images=observations,
-        #     input_ids=...,  # 需要 tokenize instructions
-        #     output_hidden_states=True,
-        # )
-        # hidden_states = outputs.hidden_states[-1]
-        # action_pred = model.predict_actions(hidden_states)
+        # 为每个指令添加图像 token
+        prompts = [f"{DEFAULT_IMAGE_TOKEN}\n{inst}" for inst in instructions]
 
-        # 简化版本：直接使用随机预测测试损失计算
-        action_pred = torch.randn_like(action_labels)
-        action_pred = torch.tanh(action_pred)  # 限制到 [-1, 1]
+        # 2. Tokenize 文本
+        input_ids = model.tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+        ).input_ids.to(self.device)
 
-        # L1 损失
+        # 3. 前向传播
+        outputs = model(
+            input_ids=input_ids,
+            images=observations,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+
+        # 4. 获取隐层状态
+        hidden_states = outputs.hidden_states[-1]  # [B, seq_len, hidden_size]
+
+        # 5. 预测动作
+        action_pred = model.predict_actions(hidden_states)  # [B, 10, 7]
+
+        # 6. 计算 L1 损失
         loss = nn.functional.l1_loss(action_pred, action_labels)
 
         return loss, action_pred

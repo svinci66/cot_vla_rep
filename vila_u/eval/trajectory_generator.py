@@ -317,11 +317,9 @@ def create_trajectory_generator(
     """
     from vila_u.model.builder import load_pretrained_model
 
-    # 加载模型
-    model, tokenizer, image_processor, context_len = load_pretrained_model(
+    # 加载模型（注意返回顺序）
+    tokenizer, model, image_processor, context_len = load_pretrained_model(
         model_path=model_path,
-        model_base=None,
-        model_name="vila-u",
         device_map=device,
     )
 

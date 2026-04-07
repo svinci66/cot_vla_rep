@@ -745,7 +745,7 @@ class VILAUMetaForCausalLM(ABC):
         从单个观察图像和语言指令预测动作序列（推理接口）。
 
         Args:
-            image: 输入图像 [3, H, W] 或 [H, W, 3] 或 PIL.Image
+            image: 输入图像 [3, H, W] 或 [H, W, 3] 或 PIL.Image 或 numpy array
             instruction: 语言指令字符串
             image_processor: 图像预处理器（可选）
 
@@ -758,63 +758,59 @@ class VILAUMetaForCausalLM(ABC):
         self.eval()
 
         # 1. 预处理图像
-        if isinstance(image, torch.Tensor):
-            if image.dim() == 3:
-                # [3, H, W] 或 [H, W, 3]
-                if image.shape[0] == 3:
-                    image_tensor = image.unsqueeze(0)  # [1, 3, H, W]
-                else:
-                    image_tensor = image.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
-            else:
-                image_tensor = image  # 假设已经是 [1, 3, H, W]
-        else:
-            # PIL.Image 或 numpy array
-            from PIL import Image
-            import numpy as np
+        from PIL import Image
+        import numpy as np
 
-            if isinstance(image, np.ndarray):
+        if isinstance(image, np.ndarray):
+            # numpy array [H, W, 3] -> PIL Image
+            image = Image.fromarray(image.astype(np.uint8))
+        elif isinstance(image, torch.Tensor):
+            # torch.Tensor -> PIL Image
+            if image.dim() == 3:
+                if image.shape[0] == 3:  # [3, H, W]
+                    image = image.permute(1, 2, 0)  # [H, W, 3]
+                image = image.cpu().numpy()
+                if image.max() <= 1.0:
+                    image = (image * 255).astype(np.uint8)
+                else:
+                    image = image.astype(np.uint8)
                 image = Image.fromarray(image)
 
-            if image_processor is not None:
-                image_tensor = image_processor(image).unsqueeze(0)
-            else:
-                # 默认预处理
-                import torchvision.transforms as transforms
-                transform = transforms.Compose([
-                    transforms.Resize((256, 256)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=[0.485, 0.456, 0.406],
-                        std=[0.229, 0.224, 0.225]
-                    ),
-                ])
-                image_tensor = transform(image).unsqueeze(0)
+        # 使用 image_processor 处理图像
+        if image_processor is None:
+            vision_tower = self.get_vision_tower()
+            image_processor = vision_tower.image_processor
+
+        # 处理图像为 tensor
+        image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values']
 
         # 移动到模型设备
         device = next(self.parameters()).device
-        image_tensor = image_tensor.to(device)
+        image_tensor = image_tensor.to(device, dtype=self.dtype)
 
-        # 2. Tokenize 指令
-        # TODO: 这里需要根据实际 VILA-U API 调整
-        # 占位符实现
+        # 2. 构建输入文本（添加图像占位符）
+        from vila_u.constants import DEFAULT_IMAGE_TOKEN
+
+        # 构建包含图像 token 的提示
+        prompt = f"{DEFAULT_IMAGE_TOKEN}\n{instruction}"
+
+        # Tokenize
         input_ids = self.tokenizer(
-            instruction,
+            prompt,
             return_tensors="pt",
             padding=True,
         ).input_ids.to(device)
 
         # 3. 前向传播获取隐层状态
-        # TODO: 这里需要根据实际 VILA-U API 调整
-        # 占位符实现：直接使用 LLM 生成隐层状态
-        # outputs = self(
-        #     images=image_tensor,
-        #     input_ids=input_ids,
-        #     output_hidden_states=True,
-        # )
-        # hidden_states = outputs.hidden_states[-1]
+        outputs = self(
+            input_ids=input_ids,
+            images=image_tensor,
+            output_hidden_states=True,
+            return_dict=True,
+        )
 
-        # 临时占位符：使用随机隐层状态
-        hidden_states = torch.randn(1, input_ids.shape[1], self.config.hidden_size).to(device)
+        # 获取最后一层隐层状态
+        hidden_states = outputs.hidden_states[-1]  # [1, seq_len, hidden_size]
 
         # 4. 预测动作
         actions = self.predict_actions(hidden_states)  # [1, chunk_size, action_dim]
