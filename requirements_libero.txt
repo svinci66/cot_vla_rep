@@ -1,0 +1,4 @@
+# Requirements for LIBERO Goal Reader
+
+h5py>=3.0.0
+numpy>=1.19.0
