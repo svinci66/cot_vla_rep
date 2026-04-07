@@ -1,9 +1,7 @@
-import os
+"""
+VILA-U evaluation module
+"""
 
-from vila_u.utils import io
+from .trajectory_generator import TrajectoryGenerator, create_trajectory_generator
 
-__all__ = ["EVAL_ROOT", "TASKS"]
-
-
-EVAL_ROOT = "scripts/eval"
-TASKS = io.load(os.path.join(os.path.dirname(__file__), "registry.yaml"))
+__all__ = ['TrajectoryGenerator', 'create_trajectory_generator']

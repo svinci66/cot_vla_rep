@@ -733,3 +733,91 @@ class VILAUMetaForCausalLM(ABC):
         actions = torch.tanh(actions)
 
         return actions
+
+    @torch.no_grad()
+    def predict_action(
+        self,
+        image: torch.Tensor,
+        instruction: str,
+        image_processor=None,
+    ) -> torch.Tensor:
+        """
+        从单个观察图像和语言指令预测动作序列（推理接口）。
+
+        Args:
+            image: 输入图像 [3, H, W] 或 [H, W, 3] 或 PIL.Image
+            instruction: 语言指令字符串
+            image_processor: 图像预处理器（可选）
+
+        Returns:
+            actions: [ACTION_CHUNK_SIZE, ACTION_DIM] 预测的动作序列
+        """
+        if not hasattr(self, 'action_head'):
+            raise RuntimeError("Action head not initialized. Set use_action_prediction=True in config.")
+
+        self.eval()
+
+        # 1. 预处理图像
+        if isinstance(image, torch.Tensor):
+            if image.dim() == 3:
+                # [3, H, W] 或 [H, W, 3]
+                if image.shape[0] == 3:
+                    image_tensor = image.unsqueeze(0)  # [1, 3, H, W]
+                else:
+                    image_tensor = image.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
+            else:
+                image_tensor = image  # 假设已经是 [1, 3, H, W]
+        else:
+            # PIL.Image 或 numpy array
+            from PIL import Image
+            import numpy as np
+
+            if isinstance(image, np.ndarray):
+                image = Image.fromarray(image)
+
+            if image_processor is not None:
+                image_tensor = image_processor(image).unsqueeze(0)
+            else:
+                # 默认预处理
+                import torchvision.transforms as transforms
+                transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]
+                    ),
+                ])
+                image_tensor = transform(image).unsqueeze(0)
+
+        # 移动到模型设备
+        device = next(self.parameters()).device
+        image_tensor = image_tensor.to(device)
+
+        # 2. Tokenize 指令
+        # TODO: 这里需要根据实际 VILA-U API 调整
+        # 占位符实现
+        input_ids = self.tokenizer(
+            instruction,
+            return_tensors="pt",
+            padding=True,
+        ).input_ids.to(device)
+
+        # 3. 前向传播获取隐层状态
+        # TODO: 这里需要根据实际 VILA-U API 调整
+        # 占位符实现：直接使用 LLM 生成隐层状态
+        # outputs = self(
+        #     images=image_tensor,
+        #     input_ids=input_ids,
+        #     output_hidden_states=True,
+        # )
+        # hidden_states = outputs.hidden_states[-1]
+
+        # 临时占位符：使用随机隐层状态
+        hidden_states = torch.randn(1, input_ids.shape[1], self.config.hidden_size).to(device)
+
+        # 4. 预测动作
+        actions = self.predict_actions(hidden_states)  # [1, chunk_size, action_dim]
+
+        # 返回单个样本的动作
+        return actions.squeeze(0)  # [chunk_size, action_dim]
