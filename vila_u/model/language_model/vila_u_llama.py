@@ -152,82 +152,88 @@ class VILAULlamaModel(VILAUMetaModel, VILAUMetaForCausalLM, PreTrainedModel):
 
         hidden_states = outputs[0]
 
-        image_hidden_states = []
-        image_labels = []
-        noimage_labels = []
+        # 只在训练模式下处理标签和计算损失
+        if new_labels is not None:
+            image_hidden_states = []
+            image_labels = []
+            noimage_labels = []
 
-        for i in range(hidden_states.shape[0]):
-            label = new_labels[i]
-            hidden_state = hidden_states[i]
-            label_zero = label[:, 0].clone()
+            for i in range(hidden_states.shape[0]):
+                label = new_labels[i]
+                hidden_state = hidden_states[i]
+                label_zero = label[:, 0].clone()
 
-            if self.config.mm_use_vi_start_end:
-                image_start_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 4)).squeeze(1)
-                image_end_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 3)).squeeze(1)
-                video_start_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 2)).squeeze(1)
-                video_end_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 1)).squeeze(1)
-                image_start_index = torch.cat([image_start_index, video_start_index])
-                image_end_index = torch.cat([image_end_index, video_end_index])
-            else:
-                image_start_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 2)).squeeze(1)
-                image_end_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 1)).squeeze(1)
+                if self.config.mm_use_vi_start_end:
+                    image_start_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 4)).squeeze(1)
+                    image_end_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 3)).squeeze(1)
+                    video_start_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 2)).squeeze(1)
+                    video_end_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 1)).squeeze(1)
+                    image_start_index = torch.cat([image_start_index, video_start_index])
+                    image_end_index = torch.cat([image_end_index, video_end_index])
+                else:
+                    image_start_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 2)).squeeze(1)
+                    image_end_index = torch.nonzero(torch.eq(label_zero, self.llm.vocab_size - 1)).squeeze(1)
 
-            assert len(image_start_index) == len(image_end_index), f"length of image_start_index is {len(image_start_index)}, length of image_end_index is {len(image_end_index)}"
+                assert len(image_start_index) == len(image_end_index), f"length of image_start_index is {len(image_start_index)}, length of image_end_index is {len(image_end_index)}"
 
-            if len(image_start_index) > 0:
-                for start_idx, end_idx in zip(image_start_index, image_end_index):
-                    image_label = label[start_idx+1:end_idx, :]
-                    image_labels.append(image_label)
-                    image_hidden_state = hidden_state[start_idx:end_idx-1, :]
-                    image_hidden_states.append(image_hidden_state)
-                    label_zero[start_idx+1:end_idx] = -100
+                if len(image_start_index) > 0:
+                    for start_idx, end_idx in zip(image_start_index, image_end_index):
+                        image_label = label[start_idx+1:end_idx, :]
+                        image_labels.append(image_label)
+                        image_hidden_state = hidden_state[start_idx:end_idx-1, :]
+                        image_hidden_states.append(image_hidden_state)
+                        label_zero[start_idx+1:end_idx] = -100
 
-            noimage_labels.append(label_zero)
-        
-        # For video
-        image_hidden_states_aux = []
-        image_labels_aux = []
-        image_hidden_states_length = [img.shape[0] for img in image_hidden_states]
-        image_hidden_states_length_relative = [img // min(image_hidden_states_length) for img in image_hidden_states_length]
-        for l in range(len(image_hidden_states_length_relative)):
-            if image_hidden_states_length_relative[l] > 1:
-                image_hidden_states_aux += torch.split(image_hidden_states[l], min(image_hidden_states_length), dim=0)
-                image_labels_aux += torch.split(image_labels[l], min(image_hidden_states_length), dim=0)
-            else:
-                image_hidden_states_aux.append(image_hidden_states[l])
-                image_labels_aux.append(image_labels[l])
+                noimage_labels.append(label_zero)
 
-        if len(image_hidden_states_aux) > 0:
-            image_hidden_states = torch.stack(image_hidden_states_aux, 0)
-            image_labels = torch.stack(image_labels_aux, 0)
+            # For video
+            image_hidden_states_aux = []
+            image_labels_aux = []
+            image_hidden_states_length = [img.shape[0] for img in image_hidden_states]
+            image_hidden_states_length_relative = [img // min(image_hidden_states_length) for img in image_hidden_states_length]
+            for l in range(len(image_hidden_states_length_relative)):
+                if image_hidden_states_length_relative[l] > 1:
+                    image_hidden_states_aux += torch.split(image_hidden_states[l], min(image_hidden_states_length), dim=0)
+                    image_labels_aux += torch.split(image_labels[l], min(image_hidden_states_length), dim=0)
+                else:
+                    image_hidden_states_aux.append(image_hidden_states[l])
+                    image_labels_aux.append(image_labels[l])
 
-        noimage_labels = torch.stack(noimage_labels, 0)
+            if len(image_hidden_states_aux) > 0:
+                image_hidden_states = torch.stack(image_hidden_states_aux, 0)
+                image_labels = torch.stack(image_labels_aux, 0)
 
-        logits = self.llm.lm_head(hidden_states)
+            noimage_labels = torch.stack(noimage_labels, 0)
 
-        loss_fct = CrossEntropyLoss()
+            logits = self.llm.lm_head(hidden_states)
 
-        image_loss = None
-        if torch.is_tensor(image_hidden_states):
-            if hasattr(self.vision_tower.vision_tower, "rqvaesiglip"):
-                outs = self.vision_tower.vision_tower.rqtransformer(image_hidden_states, image_labels - self.llm.vocab_size, self.vision_tower.vision_tower.rqvaesiglip)
-            else:
-                raise NotImplementedError()
-            B, seq_len, D, C = outs.shape
-            image_logits = outs.reshape(B*seq_len*D, C).contiguous()
-            image_labels = image_labels.reshape(B*seq_len*D).contiguous() - self.llm.vocab_size
-            image_loss = loss_fct(image_logits, image_labels)
+            loss_fct = CrossEntropyLoss()
 
-        loss = None
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = noimage_labels[..., 1:].contiguous()
-        shift_logits = shift_logits.view(-1, self.llm.config.vocab_size)
-        shift_labels = shift_labels.view(-1)
-        shift_labels = shift_labels.to(shift_logits.device)
-        loss = loss_fct(shift_logits, shift_labels)
+            image_loss = None
+            if torch.is_tensor(image_hidden_states):
+                if hasattr(self.vision_tower.vision_tower, "rqvaesiglip"):
+                    outs = self.vision_tower.vision_tower.rqtransformer(image_hidden_states, image_labels - self.llm.vocab_size, self.vision_tower.vision_tower.rqvaesiglip)
+                else:
+                    raise NotImplementedError()
+                B, seq_len, D, C = outs.shape
+                image_logits = outs.reshape(B*seq_len*D, C).contiguous()
+                image_labels = image_labels.reshape(B*seq_len*D).contiguous() - self.llm.vocab_size
+                image_loss = loss_fct(image_logits, image_labels)
 
-        if image_loss is not None:
-            loss = loss + image_loss
+            loss = None
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = noimage_labels[..., 1:].contiguous()
+            shift_logits = shift_logits.view(-1, self.llm.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+
+            if image_loss is not None:
+                loss = loss + image_loss
+        else:
+            # 推理模式：只计算 logits
+            logits = self.llm.lm_head(hidden_states)
+            loss = None
 
         return CausalLMOutputWithPast(
             loss=loss,
