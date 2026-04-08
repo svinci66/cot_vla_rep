@@ -19,11 +19,10 @@ from vila_u import conversation as conversation_lib
 from vila_u.model import VILAULlamaModel, VILAULlamaConfig
 from vila_u.model.multimodal_encoder.rqvaesigliptransformer_encoder import RQVAESIGLIPTransformerVisionTower
 from vila_u.train.vila_u_trainer import VILAUTrainer
-from vila_u.train.args import TrainingArguments, ModelArguments, DataArguments
+from vila_u.train.args import TrainingArguments, ModelArguments
 from vila_u.train.callbacks.autoresume_callback import AutoResumeCallback
 from vila_u.train.utils import (
     get_checkpoint_path,
-    prepare_config_for_training,
     mprint,
 )
 from vila_u.constants import ACTION_DIM, ACTION_CHUNK_SIZE
@@ -130,12 +129,11 @@ def train():
 
     parser = HfArgumentParser((
         ModelArguments,
-        DataArguments,
         TrainingArguments,
         ActionPredictionArguments
     ))
-    model_args, data_args, training_args, action_args = cast(
-        Tuple[ModelArguments, DataArguments, TrainingArguments, ActionPredictionArguments],
+    model_args, training_args, action_args = cast(
+        Tuple[ModelArguments, TrainingArguments, ActionPredictionArguments],
         parser.parse_args_into_dataclasses()
     )
 
@@ -175,7 +173,13 @@ def train():
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
 
-    prepare_config_for_training(config, model_args, training_args, data_args)
+    # Prepare config (without data_args)
+    config.mm_projector = model_args.mm_projector
+    config.tune_mm_projector = training_args.tune_mm_projector
+    config.mm_vision_select_layer = model_args.mm_vision_select_layer
+    config.mm_use_im_start_end = model_args.mm_use_im_start_end
+    config.mm_use_vi_start_end = model_args.mm_use_vi_start_end
+    config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
 
     model = model_cls(
         config=config,
