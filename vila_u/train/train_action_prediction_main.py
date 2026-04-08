@@ -6,9 +6,7 @@ Based on VILA-U's train.py framework with action prediction support
 import logging
 import os
 import torch
-
-# Delay transformers import to avoid numpy compatibility issues
-# transformers will be imported inside the train() function
+import transformers
 
 from torch.utils.data import Dataset
 from typing import Dict, Tuple, cast
@@ -63,8 +61,6 @@ class ActionPredictionArguments:
 
 def safe_save_model_for_hf_trainer(trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
-    import transformers
-
     if trainer.deepspeed:
         torch.cuda.synchronize()
         trainer.save_model(output_dir, _internal_call=True)
@@ -129,8 +125,6 @@ def make_action_prediction_data_module(
 def train():
     global local_rank
 
-    # Import transformers here to avoid early numpy initialization
-    import transformers
     from transformers import HfArgumentParser, AutoConfig, set_seed
 
     parser = HfArgumentParser((
