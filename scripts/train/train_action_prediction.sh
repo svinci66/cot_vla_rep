@@ -29,6 +29,11 @@ ACTION_DIM=${ACTION_DIM:-7}
 REMOVE_PAUSE_INTERVALS=${REMOVE_PAUSE_INTERVALS:-True}
 PAUSE_THRESHOLD=${PAUSE_THRESHOLD:-0.01}
 REPORT_TO=${REPORT_TO:-wandb}
+SUPPRESS_FUTURE_WARNING=${SUPPRESS_FUTURE_WARNING:-True}
+
+if [ "$SUPPRESS_FUTURE_WARNING" = "True" ] || [ "$SUPPRESS_FUTURE_WARNING" = "true" ]; then
+    export PYTHONWARNINGS="ignore::FutureWarning${PYTHONWARNINGS:+,$PYTHONWARNINGS}"
+fi
 
 # Activate environment if needed
 if [ -z "${CONDA_PREFIX:-}" ] && command -v conda >/dev/null 2>&1; then
@@ -69,6 +74,7 @@ echo "  Gradient Accumulation: $acc_step"
 echo "  Effective Batch Size: $global_bs"
 echo "  Image Size: $IMAGE_SIZE"
 echo "  Action Chunk Size: $ACTION_CHUNK_SIZE"
+echo "  Suppress FutureWarning: $SUPPRESS_FUTURE_WARNING"
 echo "=========================================="
 
 # Run training
