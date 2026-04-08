@@ -76,7 +76,12 @@ pip install transformers==4.36.2
 
 # 7.4 【修复 numpy 兼容性】重新编译 scikit-learn 以匹配当前 numpy 版本
 echo "重新编译 scikit-learn 以修复 numpy dtype 兼容性问题..."
-pip install --upgrade --force-reinstall --no-cache-dir scikit-learn
+# 先锁定 numpy 版本到 1.x
+pip install "numpy>=1.26.4,<2.0" --force-reinstall --no-cache-dir
+# 重新编译 scikit-learn，不允许升级依赖
+pip install --upgrade --force-reinstall --no-cache-dir --no-deps scikit-learn
+# 安装 scikit-learn 的依赖（但不升级已有的包）
+pip install joblib scipy threadpoolctl --no-upgrade
 
 # 7.5 【解决语法红错】修复 Python 3.12 dataclasses 中可变默认值的语法校验失败
 CONFIG_FILE="vila_u/model/multimodal_encoder/rqvaesigliptransformer/rqtransformer/configuration_rqtransformer.py"

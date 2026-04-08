@@ -51,8 +51,13 @@ echo "当前环境: $CURRENT_ENV"
 echo ""
 
 # 修复 scikit-learn
-echo "步骤 3: 重新编译 scikit-learn..."
-pip install --upgrade --force-reinstall --no-cache-dir scikit-learn
+echo "步骤 3: 重新编译 scikit-learn (锁定 numpy 版本)..."
+# 先确保 numpy 版本正确
+pip install "numpy>=1.26.4,<2.0" --force-reinstall --no-cache-dir
+# 然后重新编译 scikit-learn，不允许升级 numpy
+pip install --upgrade --force-reinstall --no-cache-dir --no-deps scikit-learn
+# 最后安装 scikit-learn 的依赖（但不升级已有的包）
+pip install joblib scipy threadpoolctl --no-upgrade
 
 if [ $? -ne 0 ]; then
     echo "✗ scikit-learn 重新安装失败"
