@@ -13,6 +13,7 @@ MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-25
 DATA_ROOT=${DATA_ROOT:-"/path/to/libero_goal"}
 OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction"}
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+SINGLE_GPU_MODE=${SINGLE_GPU_MODE:-True}
 
 NUM_GPUS=${NUM_GPUS:-1}
 BATCH_SIZE=${BATCH_SIZE:-8}
@@ -33,6 +34,7 @@ REPORT_TO=${REPORT_TO:-wandb}
 SUPPRESS_FUTURE_WARNING=${SUPPRESS_FUTURE_WARNING:-True}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-flash_attention_2}
 LOW_CPU_MEM_USAGE=${LOW_CPU_MEM_USAGE:-True}
+USE_DEEPSPEED=${USE_DEEPSPEED:-False}
 
 if [ "$SUPPRESS_FUTURE_WARNING" = "True" ] || [ "$SUPPRESS_FUTURE_WARNING" = "true" ]; then
     export PYTHONWARNINGS="ignore::FutureWarning${PYTHONWARNINGS:+,$PYTHONWARNINGS}"
@@ -54,6 +56,12 @@ export MASTER_ADDR=${master_addr:-"127.0.0.1"}
 export CURRENT_RANK=${SLURM_PROCID:-"0"}
 worker_list=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null | tr '\n' ' ')
 n_node=${SLURM_JOB_NUM_NODES:-1}
+
+if [ "$SINGLE_GPU_MODE" = "True" ] || [ "$SINGLE_GPU_MODE" = "true" ]; then
+    NUM_GPUS=1
+    n_node=1
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES%%,*}"
+fi
 
 echo "MASTER_ADDR="$MASTER_ADDR
 echo "JobID: ${SLURM_JOB_ID:-local} | Full list: $worker_list"
@@ -80,6 +88,7 @@ echo "  Model: $MODEL_PATH"
 echo "  Data: $DATA_ROOT"
 echo "  Output: $OUTPUT_DIR"
 echo "  CUDA Visible Devices: $CUDA_VISIBLE_DEVICES"
+echo "  Single GPU Mode: $SINGLE_GPU_MODE"
 echo "  GPUs per Node: $NUM_GPUS"
 echo "  Epochs: $NUM_EPOCHS"
 echo "  Learning Rate: $LEARNING_RATE"
@@ -91,48 +100,59 @@ echo "  Action Chunk Size: $ACTION_CHUNK_SIZE"
 echo "  Suppress FutureWarning: $SUPPRESS_FUTURE_WARNING"
 echo "  Attention Backend: $ATTN_IMPLEMENTATION"
 echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
+echo "  Use DeepSpeed: $USE_DEEPSPEED"
 echo "=========================================="
 
-# Run training
-torchrun --nnodes=$n_node --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT \
-    --master_addr $MASTER_ADDR --node_rank=${CURRENT_RANK} \
-    vila_u/train/train_action_prediction_mem.py \
-    --deepspeed ./scripts/zero2.json \
-    --model_name_or_path $MODEL_PATH \
-    --data_root $DATA_ROOT \
-    --version v1 \
-    --mm_projector mlp2x_gelu \
-    --tune_mm_projector True \
-    --tune_language_model True \
-    --tune_vision_tower False \
-    --mm_vision_select_layer -2 \
-    --mm_use_im_start_end True \
-    --mm_use_vi_start_end False \
-    --mm_use_im_patch_token False \
-    --image_aspect_ratio $IMAGE_ASPECT_RATIO \
-    --image_size $IMAGE_SIZE \
-    --bf16 True \
-    --output_dir $OUTPUT_DIR \
-    --num_train_epochs $NUM_EPOCHS \
-    --per_device_train_batch_size $bs \
-    --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps $acc_step \
-    --evaluation_strategy "no" \
-    --save_strategy "steps" \
-    --save_steps $SAVE_STEPS \
-    --save_total_limit 3 \
-    --learning_rate $LEARNING_RATE \
-    --weight_decay 0. \
-    --warmup_ratio $WARMUP_RATIO \
-    --lr_scheduler_type "cosine" \
-    --logging_steps 10 \
-    --tf32 True \
-    --model_max_length 2048 \
-    --gradient_checkpointing True \
-    --dataloader_num_workers 4 \
-    --lazy_preprocess True \
-    --report_to $REPORT_TO \
-    --action_chunk_size $ACTION_CHUNK_SIZE \
-    --action_dim $ACTION_DIM \
-    --remove_pause_intervals $REMOVE_PAUSE_INTERVALS \
-    --pause_threshold $PAUSE_THRESHOLD
+# Build training args
+train_args=(
+    --model_name_or_path "$MODEL_PATH"
+    --data_root "$DATA_ROOT"
+    --version v1
+    --mm_projector mlp2x_gelu
+    --tune_mm_projector True
+    --tune_language_model True
+    --tune_vision_tower False
+    --mm_vision_select_layer -2
+    --mm_use_im_start_end True
+    --mm_use_vi_start_end False
+    --mm_use_im_patch_token False
+    --image_aspect_ratio "$IMAGE_ASPECT_RATIO"
+    --image_size "$IMAGE_SIZE"
+    --bf16 True
+    --output_dir "$OUTPUT_DIR"
+    --num_train_epochs "$NUM_EPOCHS"
+    --per_device_train_batch_size "$bs"
+    --per_device_eval_batch_size 4
+    --gradient_accumulation_steps "$acc_step"
+    --evaluation_strategy no
+    --save_strategy steps
+    --save_steps "$SAVE_STEPS"
+    --save_total_limit 3
+    --learning_rate "$LEARNING_RATE"
+    --weight_decay 0.
+    --warmup_ratio "$WARMUP_RATIO"
+    --lr_scheduler_type cosine
+    --logging_steps 10
+    --tf32 True
+    --model_max_length 2048
+    --gradient_checkpointing True
+    --dataloader_num_workers 4
+    --lazy_preprocess True
+    --report_to "$REPORT_TO"
+    --action_chunk_size "$ACTION_CHUNK_SIZE"
+    --action_dim "$ACTION_DIM"
+    --remove_pause_intervals "$REMOVE_PAUSE_INTERVALS"
+    --pause_threshold "$PAUSE_THRESHOLD"
+)
+
+if [ "$USE_DEEPSPEED" = "True" ] || [ "$USE_DEEPSPEED" = "true" ]; then
+    train_args+=(--deepspeed ./scripts/zero2.json)
+fi
+
+if [ "$SINGLE_GPU_MODE" = "True" ] || [ "$SINGLE_GPU_MODE" = "true" ]; then
+    python vila_u/train/train_action_prediction_mem.py "${train_args[@]}"
+else
+    torchrun --nnodes=$n_node --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT \
+        --master_addr $MASTER_ADDR --node_rank=${CURRENT_RANK} \
+        vila_u/train/train_action_prediction_mem.py "${train_args[@]}"
+fi
