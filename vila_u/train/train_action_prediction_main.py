@@ -238,20 +238,13 @@ def train():
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        model_max_length=training_args.model_max_length,
-        padding_side="right",
-        use_fast=False,
-    )
-
+    tokenizer = model.tokenizer
     if model_args.version == "v0":
         if tokenizer.pad_token is None:
             smart_tokenizer_and_embedding_resize(
                 special_tokens_dict=dict(pad_token="[PAD]"),
                 tokenizer=tokenizer,
-                model=model,
+                model=model.llm,
             )
     elif model_args.version == "v0.5":
         tokenizer.pad_token = tokenizer.unk_token
