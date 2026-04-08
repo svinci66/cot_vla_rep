@@ -208,6 +208,7 @@ def make_action_prediction_data_module(
     data_args: ActionPredictionArguments,
     image_processor,
     training_args: TrainingArguments,
+    mm_use_im_start_end: bool,
 ) -> Dict:
     """Create data module for action prediction training"""
     from vila_u.data.libero_dataset_v2 import LiberoGoalDataset
@@ -229,7 +230,7 @@ def make_action_prediction_data_module(
         data_collator=ActionPredictionDataCollator(
             tokenizer=tokenizer,
             model_max_length=training_args.model_max_length,
-            mm_use_im_start_end=data_args.mm_use_im_start_end,
+            mm_use_im_start_end=mm_use_im_start_end,
         ),
     )
 
@@ -405,6 +406,7 @@ def train():
         data_args=action_args,
         image_processor=vision_tower.image_processor,
         training_args=training_args,
+        mm_use_im_start_end=data_args.mm_use_im_start_end,
     )
 
     # Custom trainer for action prediction

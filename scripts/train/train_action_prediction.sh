@@ -60,6 +60,7 @@ n_node=${SLURM_JOB_NUM_NODES:-1}
 if [ "$SINGLE_GPU_MODE" = "True" ] || [ "$SINGLE_GPU_MODE" = "true" ]; then
     NUM_GPUS=1
     n_node=1
+    USE_DEEPSPEED=False
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES%%,*}"
 fi
 
@@ -69,6 +70,18 @@ echo "JobID: ${SLURM_JOB_ID:-local} | Full list: $worker_list"
 # Batch size configuration
 global_bs=$BATCH_SIZE
 acc_step=$ACC_STEP
+if [ "$SINGLE_GPU_MODE" = "True" ] || [ "$SINGLE_GPU_MODE" = "true" ]; then
+    if [ "$global_bs" -lt 1 ]; then
+        echo "Error: BATCH_SIZE must be >= 1 in single GPU mode" >&2
+        exit 1
+    fi
+    if [ "$acc_step" -gt "$global_bs" ]; then
+        acc_step=$global_bs
+    fi
+    while [ "$acc_step" -gt 1 ] && [ $((global_bs % acc_step)) -ne 0 ]; do
+        acc_step=$((acc_step - 1))
+    done
+fi
 batch_divisor=$((n_node * NUM_GPUS * acc_step))
 if [ $((global_bs % batch_divisor)) -ne 0 ]; then
     echo "Error: BATCH_SIZE=$global_bs must be divisible by nnodes*NUM_GPUS*ACC_STEP=$batch_divisor" >&2
