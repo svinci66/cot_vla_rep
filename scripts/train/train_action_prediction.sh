@@ -5,10 +5,13 @@
 
 export NCCL_IB_SL=1
 export CUDA_DEVICE_MAX_CONNECTIONS=1
-export NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
-# Activate environment
-source activate vila_env  # 根据你的环境名称修改
+# Activate environment if needed
+if [ -z "${CONDA_PREFIX:-}" ] && command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+    conda activate "${CONDA_ENV_NAME:-vila_env}"  # 根据你的环境名称修改
+fi
 
 # SLURM configuration (如果使用 SLURM)
 master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null | head -n 1)
