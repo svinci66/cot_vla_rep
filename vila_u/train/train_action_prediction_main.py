@@ -6,14 +6,15 @@ Based on VILA-U's train.py framework with action prediction support
 import logging
 import os
 import torch
-import transformers
+
+# Delay transformers import to avoid numpy compatibility issues
+# transformers will be imported inside the train() function
 
 from torch.utils.data import Dataset
-from transformers import HfArgumentParser, AutoConfig
-from transformers import set_seed
 from typing import Dict, Tuple, cast
 from dataclasses import dataclass, field
 
+# Import vila_u modules (these don't trigger the numpy issue)
 from vila_u import conversation as conversation_lib
 from vila_u.model import VILAULlamaModel, VILAULlamaConfig
 from vila_u.model.multimodal_encoder.rqvaesigliptransformer_encoder import RQVAESIGLIPTransformerVisionTower
@@ -60,8 +61,10 @@ class ActionPredictionArguments:
     )
 
 
-def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
+def safe_save_model_for_hf_trainer(trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
+    import transformers
+
     if trainer.deepspeed:
         torch.cuda.synchronize()
         trainer.save_model(output_dir, _internal_call=True)
@@ -76,8 +79,8 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
-    tokenizer: transformers.PreTrainedTokenizer,
-    model: transformers.PreTrainedModel,
+    tokenizer,
+    model,
 ):
     """Resize tokenizer and embedding."""
     num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
@@ -125,6 +128,10 @@ def make_action_prediction_data_module(
 
 def train():
     global local_rank
+
+    # Import transformers here to avoid early numpy initialization
+    import transformers
+    from transformers import HfArgumentParser, AutoConfig, set_seed
 
     parser = HfArgumentParser((
         ModelArguments,
