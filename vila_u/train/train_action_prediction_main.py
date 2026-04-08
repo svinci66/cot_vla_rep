@@ -406,7 +406,7 @@ def train():
         data_args=action_args,
         image_processor=vision_tower.image_processor,
         training_args=training_args,
-        mm_use_im_start_end=mm_use_im_start_end,
+        mm_use_im_start_end=data_args.mm_use_im_start_end,
     )
 
     # Custom trainer for action prediction
