@@ -66,6 +66,13 @@ class VILAUMetaModel(ABC):
             nn.init.normal_(self.action_head.weight, std=0.02)
             nn.init.zeros_(self.action_head.bias)
             print(f"[Action Head] Initialized: {config.hidden_size} -> {action_out_dim}")
+            resume_path = getattr(config, "resume_path", None)
+            if resume_path is not None:
+                action_head_path = osp.join(resume_path, "action_head.bin")
+                if osp.isfile(action_head_path):
+                    action_head_state_dict = torch.load(action_head_path, map_location="cpu")
+                    self.action_head.load_state_dict(action_head_state_dict)
+                    print(f"[Action Head] Loaded weights from {action_head_path}")
 
         self.is_loaded = True
 
@@ -155,6 +162,13 @@ class VILAUMetaModel(ABC):
                 state_dict=mm_projector_state_dict,
             )
             self.config.mm_projector_cfg = self.mm_projector.config
+
+        if hasattr(self, "action_head"):
+            print(f"saving action_head to {osp.join(output_dir, 'action_head.bin')}")
+            action_head_state_dict = OrderedDict(
+                {k.split("action_head.")[-1]: v.cpu() for k, v in state_dict.items() if "action_head" in k}
+            )
+            torch.save(action_head_state_dict, os.path.join(output_dir, "action_head.bin"))
 
         self.config._name_or_path = output_dir
         self.config.architectures = [self.__class__.__name__]
@@ -705,6 +719,7 @@ class VILAUMetaForCausalLM(ABC):
         self,
         hidden_states: torch.Tensor,
         action_token_position: int = -1,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         从 LLM 隐层状态预测动作序列。
@@ -720,8 +735,15 @@ class VILAUMetaForCausalLM(ABC):
             raise RuntimeError("Action head not initialized. Set use_action_prediction=True in config.")
 
         B = hidden_states.shape[0]
-        # 提取指定位置的隐层状态
-        act_hidden = hidden_states[:, action_token_position, :]  # [B, hidden_size]
+        if attention_mask is not None and action_token_position == -1:
+            last_token_indices = attention_mask.long().sum(dim=-1) - 1
+            act_hidden = hidden_states[
+                torch.arange(B, device=hidden_states.device),
+                last_token_indices,
+            ]
+        else:
+            # 提取指定位置的隐层状态
+            act_hidden = hidden_states[:, action_token_position, :]  # [B, hidden_size]
 
         # 通过动作头解码
         raw = self.action_head(act_hidden)  # [B, chunk_size * action_dim]
@@ -792,16 +814,18 @@ class VILAUMetaForCausalLM(ABC):
         from vila_u.constants import DEFAULT_IMAGE_TOKEN
 
         # 构建包含图像 token 的提示
-        prompt = f"{DEFAULT_IMAGE_TOKEN}\n{instruction}"
+        image_token = DEFAULT_IMAGE_TOKEN
+        if getattr(self.config, "mm_use_im_start_end", False):
+            image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+        prompt = f"{image_token}\n{instruction}"
 
-        # Tokenize with attention_mask
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            padding=True,
-        )
-        input_ids = inputs.input_ids.to(device)
-        attention_mask = inputs.attention_mask.to(device)
+        conversation = [{"from": "human", "value": prompt}]
+        input_ids = tokenize_conversation(
+            conversation,
+            self.tokenizer,
+            add_generation_prompt=True,
+        ).unsqueeze(0).to(device)
+        attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
 
         # 3. 前向传播获取隐层状态
         outputs = self(
@@ -816,7 +840,7 @@ class VILAUMetaForCausalLM(ABC):
         hidden_states = outputs.hidden_states[-1]  # [1, seq_len, hidden_size]
 
         # 4. 预测动作
-        actions = self.predict_actions(hidden_states)  # [1, chunk_size, action_dim]
+        actions = self.predict_actions(hidden_states, attention_mask=attention_mask)  # [1, chunk_size, action_dim]
 
         # 返回单个样本的动作
         return actions.squeeze(0)  # [chunk_size, action_dim]

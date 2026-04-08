@@ -10,6 +10,7 @@ import transformers
 
 from typing import Dict, Tuple, cast
 from dataclasses import dataclass, field
+from torch.nn.utils.rnn import pad_sequence
 
 # Import vila_u modules (these don't trigger the numpy issue)
 from vila_u import conversation as conversation_lib
@@ -23,6 +24,13 @@ from vila_u.train.utils import (
     prepare_config_for_training,
     mprint,
 )
+from vila_u.constants import (
+    DEFAULT_IMAGE_TOKEN,
+    DEFAULT_IM_START_TOKEN,
+    DEFAULT_IM_END_TOKEN,
+    IGNORE_INDEX,
+)
+from vila_u.utils.tokenizer import tokenize_conversation
 
 local_rank = None
 
@@ -56,6 +64,98 @@ class ActionPredictionArguments:
         default=0.01,
         metadata={"help": "Threshold for detecting pause (L2 norm of action)"}
     )
+
+
+class ActionPredictionDataCollator:
+    def __init__(self, tokenizer, model_max_length: int, mm_use_im_start_end: bool):
+        self.tokenizer = tokenizer
+        self.model_max_length = model_max_length
+        self.mm_use_im_start_end = mm_use_im_start_end
+
+    def __call__(self, batch):
+        images = torch.stack([item["observations"] for item in batch])
+        action_labels = torch.stack([item["action_labels"] for item in batch])
+
+        image_token = DEFAULT_IMAGE_TOKEN
+        if self.mm_use_im_start_end:
+            image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+
+        prompts = [
+            tokenize_conversation(
+                [{"from": "human", "value": f"{image_token}\n{item['instructions']}"}],
+                self.tokenizer,
+                add_generation_prompt=True,
+            )
+            for item in batch
+        ]
+        input_ids = pad_sequence(
+            prompts,
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id,
+        )
+        input_ids = input_ids[:, : self.model_max_length]
+        attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "images": images,
+            "action_labels": action_labels,
+        }
+
+
+class ActionPredictionTrainer(VILAUTrainer):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        core_model = model
+        while hasattr(core_model, "module"):
+            core_model = core_model.module
+
+        core_model.freezed_module_patch()
+
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+        images = inputs["images"]
+        action_labels = inputs["action_labels"]
+
+        dummy_labels = torch.full_like(input_ids, IGNORE_INDEX)
+        (
+            _,
+            position_ids,
+            mm_attention_mask,
+            past_key_values,
+            inputs_embeds,
+            _,
+        ) = core_model.prepare_inputs_labels_for_multimodal(
+            input_ids=input_ids,
+            position_ids=None,
+            attention_mask=attention_mask,
+            past_key_values=None,
+            labels=dummy_labels,
+            images=images,
+        )
+
+        outputs = core_model.llm.model(
+            input_ids=None,
+            attention_mask=mm_attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=False,
+            output_attentions=False,
+            output_hidden_states=True,
+            return_dict=True,
+            seqlens_in_batch=mm_attention_mask.sum(dim=-1, dtype=torch.int32),
+        )
+
+        action_pred = core_model.predict_actions(
+            outputs.last_hidden_state,
+            attention_mask=mm_attention_mask,
+        )
+        loss = torch.nn.functional.l1_loss(action_pred.float(), action_labels.float())
+
+        if return_outputs:
+            return loss, {"action_pred": action_pred}
+        return loss
 
 
 def safe_save_model_for_hf_trainer(trainer, output_dir: str):
@@ -100,9 +200,10 @@ def make_action_prediction_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args: ActionPredictionArguments,
     image_processor,
+    training_args: TrainingArguments,
 ) -> Dict:
     """Create data module for action prediction training"""
-    from vila_u.data.libero_dataset_v2 import LiberoGoalDataset, collate_fn
+    from vila_u.data.libero_dataset_v2 import LiberoGoalDataset
 
     train_dataset = LiberoGoalDataset(
         data_root=data_args.data_root,
@@ -113,11 +214,16 @@ def make_action_prediction_data_module(
         remove_pause_intervals=data_args.remove_pause_intervals,
         pause_threshold=data_args.pause_threshold,
     )
+    training_args.sample_lens = [len(train_dataset)]
 
     return dict(
         train_dataset=train_dataset,
         eval_dataset=None,
-        data_collator=collate_fn,
+        data_collator=ActionPredictionDataCollator(
+            tokenizer=tokenizer,
+            model_max_length=training_args.model_max_length,
+            mm_use_im_start_end=data_args.mm_use_im_start_end,
+        ),
     )
 
 
@@ -288,10 +394,11 @@ def train():
         tokenizer=tokenizer,
         data_args=action_args,
         image_processor=vision_tower.image_processor,
+        training_args=training_args,
     )
 
     # Custom trainer for action prediction
-    trainer = VILAUTrainer(
+    trainer = ActionPredictionTrainer(
         model=model,
         tokenizer=tokenizer,
         args=training_args,
@@ -299,7 +406,7 @@ def train():
     )
 
     # Add auto-resume callback
-    trainer.add_callback(AutoResumeCallback(training_args))
+    trainer.add_callback(AutoResumeCallback())
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
@@ -309,6 +416,7 @@ def train():
     trainer.save_state()
 
     model.llm.config.use_cache = True
+    model.config.resume_path = model.config._name_or_path = training_args.output_dir
 
     safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
 
