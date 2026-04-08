@@ -12,9 +12,10 @@ CONDA_ENV_NAME=${CONDA_ENV_NAME:-"vila_env"}
 MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
 DATA_ROOT=${DATA_ROOT:-"/path/to/libero_goal"}
 OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction"}
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
-NUM_GPUS=${NUM_GPUS:-8}
-BATCH_SIZE=${BATCH_SIZE:-32}
+NUM_GPUS=${NUM_GPUS:-1}
+BATCH_SIZE=${BATCH_SIZE:-8}
 ACC_STEP=${ACC_STEP:-4}
 NUM_EPOCHS=${NUM_EPOCHS:-10}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
@@ -39,6 +40,7 @@ fi
 
 export ATTN_IMPLEMENTATION
 export LOW_CPU_MEM_USAGE
+export CUDA_VISIBLE_DEVICES
 
 # Activate environment if needed
 if [ -z "${CONDA_PREFIX:-}" ] && command -v conda >/dev/null 2>&1; then
@@ -77,6 +79,7 @@ echo "  Conda Env: $CONDA_ENV_NAME"
 echo "  Model: $MODEL_PATH"
 echo "  Data: $DATA_ROOT"
 echo "  Output: $OUTPUT_DIR"
+echo "  CUDA Visible Devices: $CUDA_VISIBLE_DEVICES"
 echo "  GPUs per Node: $NUM_GPUS"
 echo "  Epochs: $NUM_EPOCHS"
 echo "  Learning Rate: $LEARNING_RATE"
