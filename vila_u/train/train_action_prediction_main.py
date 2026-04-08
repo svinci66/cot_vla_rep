@@ -38,6 +38,13 @@ if "WANDB_PROJECT" not in os.environ:
     os.environ["WANDB_PROJECT"] = "VILA-U-Action-Prediction"
 
 
+def env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class ActionPredictionArguments:
     """Arguments for action prediction training"""
@@ -280,12 +287,15 @@ def train():
     config.use_action_prediction = True
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
+    attn_implementation = os.environ.get("ATTN_IMPLEMENTATION", "flash_attention_2")
+    low_cpu_mem_usage = env_flag("LOW_CPU_MEM_USAGE", True)
 
     model = model_cls(
         config=config,
-        attn_implementation="flash_attention_2",
+        attn_implementation=attn_implementation,
         model_max_length=training_args.model_max_length,
         cache_dir=training_args.cache_dir,
+        low_cpu_mem_usage=low_cpu_mem_usage,
     )
 
     mprint(model)
