@@ -142,7 +142,7 @@ class ActionPredictionTrainer(VILAUTrainer):
             inputs_embeds=inputs_embeds,
             use_cache=False,
             output_attentions=False,
-            output_hidden_states=True,
+            output_hidden_states=False,
             return_dict=True,
             seqlens_in_batch=mm_attention_mask.sum(dim=-1, dtype=torch.int32),
         )

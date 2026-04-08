@@ -54,7 +54,13 @@ echo "JobID: ${SLURM_JOB_ID:-local} | Full list: $worker_list"
 # Batch size configuration
 global_bs=$BATCH_SIZE
 acc_step=$ACC_STEP
-bs=$((global_bs / n_node / acc_step))
+batch_divisor=$((n_node * NUM_GPUS * acc_step))
+if [ $((global_bs % batch_divisor)) -ne 0 ]; then
+    echo "Error: BATCH_SIZE=$global_bs must be divisible by nnodes*NUM_GPUS*ACC_STEP=$batch_divisor" >&2
+    exit 1
+fi
+bs=$((global_bs / batch_divisor))
+effective_bs=$((bs * n_node * NUM_GPUS * acc_step))
 
 echo "GLOBAL_BATCH_SIZE="$global_bs
 echo "PER_DEVICE_TRAIN_BATCH_SIZE="$bs
@@ -71,7 +77,7 @@ echo "  Epochs: $NUM_EPOCHS"
 echo "  Learning Rate: $LEARNING_RATE"
 echo "  Batch Size: $bs per device"
 echo "  Gradient Accumulation: $acc_step"
-echo "  Effective Batch Size: $global_bs"
+echo "  Effective Batch Size: $effective_bs"
 echo "  Image Size: $IMAGE_SIZE"
 echo "  Action Chunk Size: $ACTION_CHUNK_SIZE"
 echo "  Suppress FutureWarning: $SUPPRESS_FUTURE_WARNING"
