@@ -1,0 +1,100 @@
+#!/bin/bash
+
+# VILA-U Action Prediction Training Script
+# Based on VILA-U's sft.sh training framework
+
+export NCCL_IB_SL=1
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export NCCL_ASYNC_ERROR_HANDLING=1
+
+# Activate environment
+source activate vila_env  # 根据你的环境名称修改
+
+# SLURM configuration (如果使用 SLURM)
+master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null | head -n 1)
+export MASTER_ADDR=${master_addr:-"127.0.0.1"}
+export CURRENT_RANK=${SLURM_PROCID:-"0"}
+worker_list=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null | tr '\n' ' ')
+n_node=${SLURM_JOB_NUM_NODES:-1}
+
+echo "MASTER_ADDR="$MASTER_ADDR
+echo "JobID: ${SLURM_JOB_ID:-local} | Full list: $worker_list"
+
+# Batch size configuration
+global_bs=${BATCH_SIZE:-32}
+acc_step=${ACC_STEP:-4}
+bs=$((global_bs / n_node / acc_step))
+
+echo "GLOBAL_BATCH_SIZE="$global_bs
+echo "PER_DEVICE_TRAIN_BATCH_SIZE="$bs
+echo "GRADIENT_ACCUMULATION_STEPS="$acc_step
+
+# Model and data paths
+MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
+DATA_ROOT=${DATA_ROOT:-"/path/to/libero_goal"}
+OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction"}
+
+# Training hyperparameters
+NUM_EPOCHS=${NUM_EPOCHS:-10}
+LEARNING_RATE=${LEARNING_RATE:-1e-5}
+WARMUP_RATIO=${WARMUP_RATIO:-0.03}
+SAVE_STEPS=${SAVE_STEPS:-500}
+
+# Number of GPUs per node
+NUM_GPUS=${NUM_GPUS:-8}
+
+echo "=========================================="
+echo "Training Configuration:"
+echo "  Model: $MODEL_PATH"
+echo "  Data: $DATA_ROOT"
+echo "  Output: $OUTPUT_DIR"
+echo "  Epochs: $NUM_EPOCHS"
+echo "  Learning Rate: $LEARNING_RATE"
+echo "  Batch Size: $bs per device"
+echo "  Gradient Accumulation: $acc_step"
+echo "  Effective Batch Size: $global_bs"
+echo "=========================================="
+
+# Run training
+torchrun --nnodes=$n_node --nproc_per_node=$NUM_GPUS --master_port=25001 \
+    --master_addr $MASTER_ADDR --node_rank=${CURRENT_RANK} \
+    vila_u/train/train_action_prediction_mem.py \
+    --deepspeed ./scripts/zero2.json \
+    --model_name_or_path $MODEL_PATH \
+    --data_root $DATA_ROOT \
+    --version v1 \
+    --mm_projector mlp2x_gelu \
+    --tune_mm_projector True \
+    --tune_language_model True \
+    --tune_vision_tower False \
+    --mm_vision_select_layer -2 \
+    --mm_use_im_start_end True \
+    --mm_use_vi_start_end False \
+    --mm_use_im_patch_token False \
+    --image_aspect_ratio resize \
+    --image_size 256 \
+    --bf16 True \
+    --output_dir $OUTPUT_DIR \
+    --num_train_epochs $NUM_EPOCHS \
+    --per_device_train_batch_size $bs \
+    --per_device_eval_batch_size 4 \
+    --gradient_accumulation_steps $acc_step \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps $SAVE_STEPS \
+    --save_total_limit 3 \
+    --learning_rate $LEARNING_RATE \
+    --weight_decay 0. \
+    --warmup_ratio $WARMUP_RATIO \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 10 \
+    --tf32 True \
+    --model_max_length 2048 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 4 \
+    --lazy_preprocess True \
+    --report_to wandb \
+    --action_chunk_size 10 \
+    --action_dim 7 \
+    --remove_pause_intervals True \
+    --pause_threshold 0.01
