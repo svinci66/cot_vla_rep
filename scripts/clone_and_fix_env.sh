@@ -1,18 +1,21 @@
 #!/bin/bash
 
 # 克隆现有 Conda 环境并修复 numpy 兼容性问题
+# 保护原始环境不被修改
 
 echo "=========================================="
 echo "克隆 Conda 环境并修复依赖"
 echo "=========================================="
 
-# 配置
+# 配置 - 固定路径，不接受参数
 SOURCE_ENV="/data/share/1919650160032350208/sj/conda_pkgs/vila_env"
 NEW_ENV="/data/share/1919650160032350208/sj/conda_pkgs/vila_env_fixed"
 
 echo ""
-echo "源环境: $SOURCE_ENV"
-echo "新环境: $NEW_ENV"
+echo "源环境（只读）: $SOURCE_ENV"
+echo "新环境（可修改）: $NEW_ENV"
+echo ""
+echo "⚠️  原始环境 vila_env 不会被修改"
 echo ""
 
 # 激活 Conda

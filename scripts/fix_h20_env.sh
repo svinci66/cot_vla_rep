@@ -1,18 +1,33 @@
 #!/usr/bin/env bash
 
 # H20 专用：修复 transformers 4.36.2 在 Python 3.12 环境下的兼容性问题
+# 只在 vila_env_fixed 环境下操作，不影响原始环境
 
 echo "=========================================="
-echo "H20 环境修复脚本"
+echo "H20 环境修复脚本（仅修改 vila_env_fixed）"
 echo "=========================================="
 
 # 激活环境
 eval "$(/data/share/1919650160032350208/sj/conda_env/miniconda3/bin/conda shell.bash hook)"
-CONDA_ENV_PATH="/data/share/1919650160032350208/sj/conda_pkgs/${1:-"vila_env"}"
+
+# 强制使用 vila_env_fixed，忽略参数
+CONDA_ENV_PATH="/data/share/1919650160032350208/sj/conda_pkgs/vila_env_fixed"
+
+# 检查环境是否存在
+if [ ! -d "$CONDA_ENV_PATH" ]; then
+    echo ""
+    echo "✗ 错误: vila_env_fixed 环境不存在"
+    echo ""
+    echo "请先运行克隆脚本创建环境："
+    echo "  bash scripts/clone_and_fix_env.sh"
+    exit 1
+fi
+
 conda activate "$CONDA_ENV_PATH"
 
 echo ""
-echo "当前环境: $CONDA_ENV_PATH"
+echo "✓ 已激活环境: $CONDA_ENV_PATH"
+echo "✓ 原始环境 vila_env 不会被修改"
 echo "Python 版本: $(python --version)"
 echo ""
 
