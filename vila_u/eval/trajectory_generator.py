@@ -4,6 +4,7 @@ VILA-U 轨迹生成器
 在 LIBERO 环境中闭环生成完整的机器人执行轨迹
 """
 
+import os
 import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple
@@ -320,15 +321,30 @@ def create_trajectory_generator(
     # 加载模型（注意返回顺序）
     tokenizer, model, image_processor, context_len = load_pretrained_model(
         model_path=model_path,
-        device_map=device,
+        device=device,
     )
 
-    # 加载动作预测头检查点
+    # 加载动作预测头检查点（兼容旧 checkpoint 和当前 action_head.bin 保存格式）
     if checkpoint_path is not None:
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        if 'action_head' in checkpoint:
-            model.action_head.load_state_dict(checkpoint['action_head'])
-            print(f"Loaded action head from {checkpoint_path}")
+        action_head_path = checkpoint_path
+        if os.path.isdir(checkpoint_path):
+            action_head_path = os.path.join(checkpoint_path, "action_head.bin")
+
+        checkpoint = torch.load(action_head_path, map_location=device)
+        if isinstance(checkpoint, dict) and 'action_head' in checkpoint:
+            state_dict = checkpoint['action_head']
+        else:
+            state_dict = checkpoint
+
+        if any(key.startswith("action_head.") for key in state_dict.keys()):
+            state_dict = {
+                key.split("action_head.", 1)[1]: value
+                for key, value in state_dict.items()
+                if key.startswith("action_head.")
+            }
+
+        model.action_head.load_state_dict(state_dict)
+        print(f"Loaded action head from {action_head_path}")
 
     # 创建生成器
     generator = TrajectoryGenerator(
