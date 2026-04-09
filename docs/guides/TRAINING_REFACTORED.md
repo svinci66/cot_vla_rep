@@ -82,11 +82,14 @@ obs_tensor = self.image_processor.preprocess(
 ```bash
 cd /data/share/1919650160032350208/sj/cot-vla/cot_vla_rep
 
-# 设置环境变量
+# 单卡 H20 推荐配置
 export MODEL_PATH="/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"
 export DATA_ROOT="/path/to/libero_goal"
 export OUTPUT_DIR="./checkpoints/vila-u-action-prediction"
-export BATCH_SIZE=32
+export SINGLE_GPU_MODE=True
+export USE_DEEPSPEED=False
+export CUDA_VISIBLE_DEVICES=0
+export BATCH_SIZE=8
 export ACC_STEP=4
 export NUM_EPOCHS=10
 export LEARNING_RATE=1e-5
@@ -95,7 +98,7 @@ export LEARNING_RATE=1e-5
 bash scripts/train/train_action_prediction.sh
 ```
 
-### 方法 2: 直接使用 torchrun
+### 方法 2: 多卡时直接使用 torchrun
 
 ```bash
 torchrun --nproc_per_node=8 --master_port=25001 \
@@ -125,6 +128,11 @@ torchrun --nproc_per_node=8 --master_port=25001 \
     --remove_pause_intervals True \
     --pause_threshold 0.01
 ```
+
+说明：
+- `BATCH_SIZE` 在训练脚本里表示全局 effective batch，不是每卡 batch。
+- 单卡模式下脚本会自动换算 `per_device_train_batch_size`，并在必要时下调 `ACC_STEP`，避免出现每卡 batch 为 0。
+- 单卡默认直接走 `python vila_u/train/train_action_prediction_mem.py`，只有多卡时才走 `torchrun`。
 
 ---
 
