@@ -166,7 +166,7 @@ if [ "$USE_DEEPSPEED" = "True" ] || [ "$USE_DEEPSPEED" = "true" ]; then
 fi
 
 if [ "$SINGLE_GPU_MODE" = "True" ] || [ "$SINGLE_GPU_MODE" = "true" ]; then
-    python vila_u/train/train_action_prediction_mem.py "${train_args[@]}"
+    python -m vila_u.train.train_action_prediction_mem "${train_args[@]}"
 else
     torchrun --nnodes=$n_node --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT \
         --master_addr $MASTER_ADDR --node_rank=${CURRENT_RANK} \
