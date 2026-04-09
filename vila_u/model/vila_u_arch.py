@@ -752,6 +752,7 @@ class VILAUMetaForCausalLM(ABC):
             act_hidden = hidden_states[:, action_token_position, :]  # [B, hidden_size]
 
         # 通过动作头解码
+        act_hidden = act_hidden.to(self.action_head.weight.dtype)
         raw = self.action_head(act_hidden)  # [B, chunk_size * action_dim]
 
         # Reshape 为动作序列
