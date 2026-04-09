@@ -227,6 +227,12 @@ class VILAUMetaModel(ABC):
         else:
             raise NotImplementedError()
 
+        vision_param = next(vision_tower.parameters())
+        images = images.to(
+            device=vision_param.device,
+            dtype=vision_param.dtype,
+            non_blocking=True,
+        )
         image_features, tokens = vision_tower(images, self.llm.vocab_size)
         image_features = mm_projector(image_features)
 
