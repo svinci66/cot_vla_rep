@@ -5,6 +5,7 @@ Based on VILA-U's train.py framework with action prediction support
 
 import logging
 import os
+import pathlib
 import torch
 import transformers
 
@@ -438,5 +439,4 @@ def train():
 
 
 if __name__ == "__main__":
-    import pathlib
     train()
