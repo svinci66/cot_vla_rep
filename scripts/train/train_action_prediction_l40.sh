@@ -10,7 +10,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 # Editable configuration
 CONDA_ENV_NAME=${CONDA_ENV_NAME:-"vila_env"}
 MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
-DATA_ROOT=${DATA_ROOT:-"/path/to/libero_goal"}
+DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
 OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction-l40"}
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 SINGLE_GPU_MODE=${SINGLE_GPU_MODE:-True}
