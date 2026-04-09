@@ -310,7 +310,11 @@ def train():
         model.get_mm_projector().requires_grad_(training_args.tune_mm_projector)
         if isinstance(model.get_vision_tower(), RQVAESIGLIPTransformerVisionTower):
             model.get_vision_tower().vision_tower.rqvaesiglip.eval()
-            model.get_vision_tower().vision_tower.rqtransformer.requires_grad_(True)
+            model.get_vision_tower().vision_tower.rqtransformer.requires_grad_(
+                training_args.tune_vision_tower
+            )
+            if not training_args.tune_vision_tower:
+                model.get_vision_tower().vision_tower.rqtransformer.eval()
         else:
             raise NotImplementedError()
         print(f"vision tower {training_args.tune_vision_tower}")
