@@ -19,5 +19,6 @@ SENTINEL_TOKEN = "<vila/sentinel>"
 ACTION_DIM = 7              # 7-DoF 动作: [dx, dy, dz, droll, dpitch, dyaw, gripper]
 ACTION_CHUNK_SIZE = 10      # 每次预测的动作步数
 ACTION_HORIZON = 10         # 动作预测的时间跨度
+ACTION_NUM_BINS = 256       # Phase 2: 每个动作维度离散化 bin 数
 ACTION_MIN = -1.0           # 动作归一化最小值
 ACTION_MAX = 1.0            # 动作归一化最大值
