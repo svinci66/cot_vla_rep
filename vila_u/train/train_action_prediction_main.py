@@ -29,8 +29,10 @@ from vila_u.constants import (
     DEFAULT_IMAGE_TOKEN,
     DEFAULT_IM_START_TOKEN,
     DEFAULT_IM_END_TOKEN,
+    ACTION_NUM_BINS,
     IGNORE_INDEX,
 )
+from vila_u.utils.action_tokenizer import actions_to_token_ids, select_action_token_ids
 from vila_u.utils.tokenizer import tokenize_conversation
 
 local_rank = None
@@ -72,6 +74,10 @@ class ActionPredictionArguments:
         default=0.01,
         metadata={"help": "Threshold for detecting pause (L2 norm of action)"}
     )
+    use_discrete_action_prediction: bool = field(
+        default=True,
+        metadata={"help": "Use autoregressive discrete action tokens instead of regression"}
+    )
 
 
 class ActionPredictionDataCollator:
@@ -112,11 +118,91 @@ class ActionPredictionDataCollator:
         }
 
 
+class DiscreteActionPredictionDataCollator:
+    def __init__(
+        self,
+        tokenizer,
+        model_max_length: int,
+        mm_use_im_start_end: bool,
+        action_token_ids,
+        action_chunk_size: int,
+        action_dim: int,
+    ):
+        self.tokenizer = tokenizer
+        self.model_max_length = model_max_length
+        self.mm_use_im_start_end = mm_use_im_start_end
+        self.action_token_ids = action_token_ids
+        self.num_action_tokens = action_chunk_size * action_dim
+
+    def __call__(self, batch):
+        images = torch.stack([item["observations"] for item in batch])
+        actions = torch.stack([item["action_labels"] for item in batch])
+
+        image_token = DEFAULT_IMAGE_TOKEN
+        if self.mm_use_im_start_end:
+            image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+
+        input_id_list = []
+        label_list = []
+        for item, action in zip(batch, actions):
+            prompt_ids = tokenize_conversation(
+                [{"from": "human", "value": f"{image_token}\n{item['instructions']}"}],
+                self.tokenizer,
+                add_generation_prompt=True,
+            )
+            action_token_ids = actions_to_token_ids(
+                action.view(-1),
+                self.action_token_ids,
+                num_bins=ACTION_NUM_BINS,
+            )
+            input_ids = torch.cat([prompt_ids, action_token_ids], dim=0)
+            labels = torch.cat(
+                [
+                    torch.full_like(prompt_ids, IGNORE_INDEX),
+                    action_token_ids,
+                ],
+                dim=0,
+            )
+            input_id_list.append(input_ids[: self.model_max_length])
+            label_list.append(labels[: self.model_max_length])
+
+        input_ids = pad_sequence(
+            input_id_list,
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id,
+        )
+        labels = pad_sequence(
+            label_list,
+            batch_first=True,
+            padding_value=IGNORE_INDEX,
+        )
+        attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "images": images,
+            "labels": labels,
+        }
+
+
 class ActionPredictionTrainer(VILAUTrainer):
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         core_model = model
         while hasattr(core_model, "module"):
             core_model = core_model.module
+
+        if getattr(core_model.config, "use_discrete_action_prediction", False):
+            outputs = model(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                images=inputs["images"],
+                labels=inputs["labels"],
+                return_dict=True,
+            )
+            if return_outputs:
+                return outputs.loss, outputs
+            return outputs.loss
 
         core_model.freezed_module_patch()
 
@@ -210,6 +296,7 @@ def make_action_prediction_data_module(
     image_processor,
     training_args: TrainingArguments,
     mm_use_im_start_end: bool,
+    action_token_ids,
 ) -> Dict:
     """Create data module for action prediction training"""
     from vila_u.data.libero_dataset_v2 import LiberoGoalDataset
@@ -228,10 +315,21 @@ def make_action_prediction_data_module(
     return dict(
         train_dataset=train_dataset,
         eval_dataset=None,
-        data_collator=ActionPredictionDataCollator(
-            tokenizer=tokenizer,
-            model_max_length=training_args.model_max_length,
-            mm_use_im_start_end=mm_use_im_start_end,
+        data_collator=(
+            DiscreteActionPredictionDataCollator(
+                tokenizer=tokenizer,
+                model_max_length=training_args.model_max_length,
+                mm_use_im_start_end=mm_use_im_start_end,
+                action_token_ids=action_token_ids,
+                action_chunk_size=data_args.action_chunk_size,
+                action_dim=data_args.action_dim,
+            )
+            if data_args.use_discrete_action_prediction
+            else ActionPredictionDataCollator(
+                tokenizer=tokenizer,
+                model_max_length=training_args.model_max_length,
+                mm_use_im_start_end=mm_use_im_start_end,
+            )
         ),
     )
 
@@ -286,9 +384,11 @@ def train():
     prepare_config_for_training(config, model_args, training_args, data_args)
 
     # Enable action prediction
-    config.use_action_prediction = True
+    config.use_discrete_action_prediction = action_args.use_discrete_action_prediction
+    config.use_action_prediction = not action_args.use_discrete_action_prediction
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
+    config.action_num_bins = ACTION_NUM_BINS
     attn_implementation = os.environ.get("ATTN_IMPLEMENTATION", "flash_attention_2")
     low_cpu_mem_usage = env_flag("LOW_CPU_MEM_USAGE", True)
 
@@ -404,6 +504,11 @@ def train():
     training_args.use_vi_start_end = model_args.mm_use_vi_start_end
     model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
     model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+    action_token_ids = None
+    if action_args.use_discrete_action_prediction:
+        action_token_ids = select_action_token_ids(tokenizer, num_bins=ACTION_NUM_BINS)
+        model.config.action_token_ids = action_token_ids
+        model.config.action_num_bins = ACTION_NUM_BINS
 
     # Create data module for action prediction
     data_module = make_action_prediction_data_module(
@@ -412,6 +517,7 @@ def train():
         image_processor=vision_tower.image_processor,
         training_args=training_args,
         mm_use_im_start_end=data_args.mm_use_im_start_end,
+        action_token_ids=action_token_ids,
     )
 
     # Custom trainer for action prediction

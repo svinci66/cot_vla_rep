@@ -79,7 +79,11 @@ def bins_to_token_ids(
     action_token_ids: Sequence[int],
 ) -> torch.LongTensor:
     action_bins = torch.as_tensor(action_bins, dtype=torch.long)
-    token_tensor = torch.as_tensor(action_token_ids, dtype=torch.long)
+    token_tensor = torch.as_tensor(
+        action_token_ids,
+        dtype=torch.long,
+        device=action_bins.device,
+    )
     return token_tensor[action_bins]
 
 
@@ -88,7 +92,11 @@ def token_ids_to_bins(
     action_token_ids: Sequence[int],
 ) -> torch.LongTensor:
     token_ids = torch.as_tensor(token_ids, dtype=torch.long)
-    token_tensor = torch.as_tensor(action_token_ids, dtype=torch.long)
+    token_tensor = torch.as_tensor(
+        action_token_ids,
+        dtype=torch.long,
+        device=token_ids.device,
+    )
 
     positions = torch.searchsorted(token_tensor, token_ids)
     valid = positions < token_tensor.numel()

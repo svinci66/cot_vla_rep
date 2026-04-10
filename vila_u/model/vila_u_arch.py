@@ -29,6 +29,7 @@ from vila_u.model.utils import get_model_config
 from vila_u.mm_utils import process_images
 from vila_u.utils.media import extract_media
 from vila_u.utils.tokenizer import infer_stop_tokens, tokenize_conversation
+from vila_u.utils.action_tokenizer import token_ids_to_actions
 
 
 class VILAUMetaModel(ABC):
@@ -54,7 +55,9 @@ class VILAUMetaModel(ABC):
         self.post_config()
 
         # ===== Action Prediction Head =====
-        if getattr(config, "use_action_prediction", False):
+        if getattr(config, "use_action_prediction", False) and not getattr(
+            config, "use_discrete_action_prediction", False
+        ):
             from torch import nn
             action_out_dim = config.action_chunk_size * config.action_dim
             self.action_head = nn.Linear(
@@ -737,6 +740,11 @@ class VILAUMetaForCausalLM(ABC):
         Returns:
             actions: [B, ACTION_CHUNK_SIZE, ACTION_DIM] 预测的动作序列
         """
+        if getattr(self.config, "use_discrete_action_prediction", False):
+            raise RuntimeError(
+                "predict_actions() is for regression mode only. "
+                "Use predict_action() autoregressive token generation in discrete mode."
+            )
         if not hasattr(self, 'action_head'):
             raise RuntimeError("Action head not initialized. Set use_action_prediction=True in config.")
 
@@ -782,7 +790,8 @@ class VILAUMetaForCausalLM(ABC):
             actions: [ACTION_CHUNK_SIZE, ACTION_DIM] 预测的动作序列
         """
         if not hasattr(self, 'action_head'):
-            raise RuntimeError("Action head not initialized. Set use_action_prediction=True in config.")
+            if not getattr(self.config, "use_discrete_action_prediction", False):
+                raise RuntimeError("Action head not initialized. Set use_action_prediction=True in config.")
 
         self.eval()
 
@@ -833,6 +842,24 @@ class VILAUMetaForCausalLM(ABC):
             add_generation_prompt=True,
         ).unsqueeze(0).to(device)
         attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
+
+        if getattr(self.config, "use_discrete_action_prediction", False):
+            action_token_ids = getattr(self.config, "action_token_ids", None)
+            if action_token_ids is None:
+                raise RuntimeError("Discrete action prediction requires config.action_token_ids")
+
+            num_action_tokens = self.config.action_chunk_size * self.config.action_dim
+            output_ids = self.generate(
+                input_ids=input_ids,
+                images=image_tensor,
+                attention_mask=attention_mask,
+                do_sample=False,
+                max_new_tokens=num_action_tokens,
+                use_cache=True,
+            )
+            generated_action_ids = output_ids[:, -num_action_tokens:]
+            actions = token_ids_to_actions(generated_action_ids, action_token_ids)
+            return actions.view(1, self.config.action_chunk_size, self.config.action_dim).squeeze(0)
 
         # 3. 前向传播获取隐层状态
         outputs = self(

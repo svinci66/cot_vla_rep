@@ -38,4 +38,9 @@ class VILAUConfig(PretrainedConfig):
         # ===== Action Prediction =====
         self.action_dim = kwargs.pop("action_dim", 7)
         self.action_chunk_size = kwargs.pop("action_chunk_size", 10)
+        self.action_num_bins = kwargs.pop("action_num_bins", 256)
         self.use_action_prediction = kwargs.pop("use_action_prediction", False)
+        self.use_discrete_action_prediction = kwargs.pop(
+            "use_discrete_action_prediction", False
+        )
+        self.action_token_ids = kwargs.pop("action_token_ids", None)
