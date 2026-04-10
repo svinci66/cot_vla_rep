@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 import torch
+from transformers import LogitsProcessor
 
 from vila_u.constants import ACTION_MAX, ACTION_MIN, ACTION_NUM_BINS
 
@@ -20,6 +21,21 @@ class ActionTokenSpec:
             raise ValueError(
                 f"Expected {self.num_bins} action tokens, got {len(self.token_ids)}"
             )
+
+
+class AllowedActionTokensLogitsProcessor(LogitsProcessor):
+    def __init__(self, action_token_ids: Sequence[int]):
+        self.action_token_ids = tuple(action_token_ids)
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        allowed_ids = torch.as_tensor(
+            self.action_token_ids,
+            dtype=torch.long,
+            device=scores.device,
+        )
+        masked_scores = torch.full_like(scores, float("-inf"))
+        masked_scores[:, allowed_ids] = scores[:, allowed_ids]
+        return masked_scores
 
 
 def select_action_token_ids(tokenizer, num_bins: int = ACTION_NUM_BINS) -> list[int]:

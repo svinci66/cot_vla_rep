@@ -69,7 +69,24 @@ def test_action_token_roundtrip():
     print("✓ action/token roundtrip verified")
 
 
+def test_allowed_action_token_logits_processor():
+    from vila_u.utils.action_tokenizer import AllowedActionTokensLogitsProcessor
+
+    processor = AllowedActionTokensLogitsProcessor([2, 4, 6])
+    scores = torch.arange(8, dtype=torch.float32).unsqueeze(0)
+    processed = processor(torch.tensor([[1, 2]]), scores.clone())
+
+    allowed = {2, 4, 6}
+    for idx in range(processed.shape[-1]):
+        if idx in allowed:
+            assert processed[0, idx] == scores[0, idx]
+        else:
+            assert torch.isneginf(processed[0, idx])
+    print("✓ logits processor restricts generation to action tokens")
+
+
 if __name__ == "__main__":
     test_select_action_token_ids()
     test_discretize_and_undiscretize()
     test_action_token_roundtrip()
+    test_allowed_action_token_logits_processor()

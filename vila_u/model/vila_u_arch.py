@@ -29,7 +29,10 @@ from vila_u.model.utils import get_model_config
 from vila_u.mm_utils import process_images
 from vila_u.utils.media import extract_media
 from vila_u.utils.tokenizer import infer_stop_tokens, tokenize_conversation
-from vila_u.utils.action_tokenizer import token_ids_to_actions
+from vila_u.utils.action_tokenizer import (
+    AllowedActionTokensLogitsProcessor,
+    token_ids_to_actions,
+)
 
 
 class VILAUMetaModel(ABC):
@@ -856,6 +859,7 @@ class VILAUMetaForCausalLM(ABC):
                 do_sample=False,
                 max_new_tokens=num_action_tokens,
                 use_cache=True,
+                logits_processor=[AllowedActionTokensLogitsProcessor(action_token_ids)],
             )
             generated_action_ids = output_ids[:, -num_action_tokens:]
             actions = token_ids_to_actions(generated_action_ids, action_token_ids)
