@@ -11,6 +11,7 @@ Checks:
 import argparse
 import json
 import os
+from pathlib import Path
 
 import h5py
 import torch
@@ -21,6 +22,7 @@ from vila_u.constants import (
     DEFAULT_IM_START_TOKEN,
 )
 from vila_u.model.builder import load_pretrained_model
+from vila_u.train.utils import get_checkpoint_path
 from vila_u.utils.action_tokenizer import (
     AllowedActionTokensLogitsProcessor,
     token_ids_to_actions,
@@ -60,6 +62,29 @@ def build_prompt(model, instruction: str) -> str:
     return f"{image_token}\n{instruction}"
 
 
+def resolve_model_path(model_path: str) -> str:
+    path = Path(model_path).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+
+    if path.is_dir():
+        checkpoint_path, _ = get_checkpoint_path(str(path))
+        if checkpoint_path is not None:
+            return checkpoint_path
+        return str(path)
+
+    if not path.exists() and path.name.startswith("tmp-checkpoint-"):
+        alt = path.with_name(path.name.replace("tmp-checkpoint-", "checkpoint-", 1))
+        if alt.is_dir():
+            return str(alt)
+
+    raise FileNotFoundError(
+        f"Model path does not exist: {path}. "
+        "Pass a final model directory, an output directory containing checkpoint-* folders, "
+        "or a concrete checkpoint directory."
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate Phase 2 discrete-action inference.")
     parser.add_argument(
@@ -78,6 +103,8 @@ def main():
     parser.add_argument("--timestep", type=int, default=0, help="Which timestep to sample.")
     args = parser.parse_args()
 
+    resolved_model_path = resolve_model_path(args.model_path)
+
     sample = load_one_libero_sample(
         data_root=args.data_root,
         file_index=args.file_index,
@@ -88,14 +115,15 @@ def main():
     print("=" * 70)
     print("Phase 2 Discrete Inference Validation")
     print("=" * 70)
-    print(f"Model path: {args.model_path}")
+    print(f"Requested model path: {args.model_path}")
+    print(f"Resolved model path: {resolved_model_path}")
     print(f"Sample file: {sample['data_file']}")
     print(f"Demo: {sample['demo_name']}")
     print(f"Timestep: {args.timestep}")
     print()
 
     tokenizer, model, image_processor, _ = load_pretrained_model(
-        model_path=args.model_path,
+        model_path=resolved_model_path,
         device=args.device,
     )
     model.eval()
