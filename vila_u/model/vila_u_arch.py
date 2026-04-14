@@ -131,9 +131,16 @@ class VILAUMetaModel(ABC):
         ), "At least one of the components must be instantiated."
         return vlm
 
-    def save_pretrained(self, output_dir, state_dict=None):
+    def save_pretrained(
+        self,
+        output_dir,
+        state_dict=None,
+        safe_serialization: bool = False,
+        **kwargs,
+    ):
         if state_dict is None:
             state_dict = self.state_dict()
+        os.makedirs(output_dir, exist_ok=True)
         
         if getattr(self, "tokenizer", None):
             self.tokenizer.save_pretrained(osp.join(output_dir, "llm"))
@@ -142,7 +149,11 @@ class VILAUMetaModel(ABC):
             print(f"saving llm to {osp.join(output_dir, 'llm')}")
             self.llm.config._name_or_path = osp.join(output_dir, "llm")
             llm_state_dict = OrderedDict({k.split("llm.")[-1]: v for k, v in state_dict.items() if "llm" in k})
-            self.llm.save_pretrained(os.path.join(output_dir, "llm"), state_dict=llm_state_dict)
+            self.llm.save_pretrained(
+                os.path.join(output_dir, "llm"),
+                state_dict=llm_state_dict,
+                safe_serialization=safe_serialization,
+            )
             self.config.llm_cfg = self.llm.config
 
         if self.get_vision_tower() and "radio" not in self.get_vision_tower().__class__.__name__.lower():
@@ -154,6 +165,7 @@ class VILAUMetaModel(ABC):
             self.vision_tower.vision_tower.save_pretrained(
                 os.path.join(output_dir, "vision_tower"),
                 state_dict=vision_tower_state_dict,
+                safe_serialization=safe_serialization,
             )
             self.vision_tower.image_processor.save_pretrained(os.path.join(output_dir, "vision_tower"))
             self.config.vision_tower_cfg = self.vision_tower.config
@@ -169,6 +181,7 @@ class VILAUMetaModel(ABC):
             self.mm_projector.save_pretrained(
                 os.path.join(output_dir, "mm_projector"),
                 state_dict=mm_projector_state_dict,
+                safe_serialization=safe_serialization,
             )
             self.config.mm_projector_cfg = self.mm_projector.config
 
