@@ -620,10 +620,7 @@ def train():
     # Add auto-resume callback
     trainer.add_callback(AutoResumeCallback())
 
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     trainer.save_state()
 
