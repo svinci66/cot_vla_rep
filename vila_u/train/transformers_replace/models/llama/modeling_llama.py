@@ -604,10 +604,10 @@ class LlamaDecoderLayer(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = (
-            #LlamaAttention(config=config)
-            LlamaFlashAttention2(config=config)
-        )
+        if getattr(config, "_attn_implementation", "flash_attention_2") == "flash_attention_2":
+            self.self_attn = LlamaFlashAttention2(config=config)
+        else:
+            self.self_attn = LlamaAttention(config=config)
         self.mlp = LlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)

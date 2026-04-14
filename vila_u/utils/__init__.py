@@ -11,3 +11,7 @@ from .action_tokenizer import (
     token_ids_to_bins,
     undiscretize_action_bins,
 )
+from .hybrid_attention import (
+    build_action_token_position_mask,
+    build_hybrid_attention_mask,
+)

@@ -28,9 +28,11 @@ from vila_u.model.multimodal_projector.builder import build_mm_projector
 from vila_u.model.utils import get_model_config
 from vila_u.mm_utils import process_images
 from vila_u.utils.media import extract_media
+from vila_u.utils.hybrid_attention import build_hybrid_attention_mask
 from vila_u.utils.tokenizer import infer_stop_tokens, tokenize_conversation
 from vila_u.utils.action_tokenizer import (
     AllowedActionTokensLogitsProcessor,
+    bins_to_token_ids,
     token_ids_to_actions,
 )
 
@@ -852,16 +854,71 @@ class VILAUMetaForCausalLM(ABC):
                 raise RuntimeError("Discrete action prediction requires config.action_token_ids")
 
             num_action_tokens = self.config.action_chunk_size * self.config.action_dim
-            output_ids = self.generate(
-                input_ids=input_ids,
-                images=image_tensor,
-                attention_mask=attention_mask,
-                do_sample=False,
-                max_new_tokens=num_action_tokens,
-                use_cache=True,
-                logits_processor=[AllowedActionTokensLogitsProcessor(action_token_ids)],
-            )
-            generated_action_ids = output_ids[:, -num_action_tokens:]
+            if getattr(self.config, "use_hybrid_attention", False):
+                action_slot_token_id = getattr(self.config, "action_slot_token_id", None)
+                if action_slot_token_id is None:
+                    raise RuntimeError("Hybrid attention requires config.action_slot_token_id")
+
+                action_slots = torch.full(
+                    (1, num_action_tokens),
+                    fill_value=action_slot_token_id,
+                    dtype=input_ids.dtype,
+                    device=input_ids.device,
+                )
+                full_input_ids = torch.cat([input_ids, action_slots], dim=1)
+                full_attention_mask = full_input_ids.ne(self.tokenizer.pad_token_id)
+                (
+                    _,
+                    position_ids,
+                    mm_attention_mask,
+                    past_key_values,
+                    inputs_embeds,
+                    _,
+                ) = self.prepare_inputs_labels_for_multimodal(
+                    input_ids=full_input_ids,
+                    position_ids=None,
+                    attention_mask=full_attention_mask,
+                    past_key_values=None,
+                    labels=None,
+                    images=image_tensor,
+                )
+                hybrid_attention_mask = build_hybrid_attention_mask(
+                    mm_attention_mask,
+                    num_action_tokens=num_action_tokens,
+                    dtype=inputs_embeds.dtype,
+                )
+                outputs = self.llm.model(
+                    input_ids=None,
+                    attention_mask=hybrid_attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=False,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
+                    seqlens_in_batch=None,
+                )
+                logits = self.llm.lm_head(outputs.last_hidden_state)[:, -num_action_tokens:, :]
+                action_token_tensor = torch.as_tensor(
+                    action_token_ids,
+                    dtype=torch.long,
+                    device=logits.device,
+                )
+                action_logits = logits.index_select(dim=-1, index=action_token_tensor)
+                predicted_bins = torch.argmax(action_logits, dim=-1)
+                generated_action_ids = bins_to_token_ids(predicted_bins, action_token_ids)
+            else:
+                output_ids = self.generate(
+                    input_ids=input_ids,
+                    images=image_tensor,
+                    attention_mask=attention_mask,
+                    do_sample=False,
+                    max_new_tokens=num_action_tokens,
+                    use_cache=True,
+                    logits_processor=[AllowedActionTokensLogitsProcessor(action_token_ids)],
+                )
+                generated_action_ids = output_ids[:, -num_action_tokens:]
             actions = token_ids_to_actions(generated_action_ids, action_token_ids)
             return actions.view(1, self.config.action_chunk_size, self.config.action_dim).squeeze(0)
 

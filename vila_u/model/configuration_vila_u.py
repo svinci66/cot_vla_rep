@@ -44,3 +44,5 @@ class VILAUConfig(PretrainedConfig):
             "use_discrete_action_prediction", False
         )
         self.action_token_ids = kwargs.pop("action_token_ids", None)
+        self.action_slot_token_id = kwargs.pop("action_slot_token_id", None)
+        self.use_hybrid_attention = kwargs.pop("use_hybrid_attention", False)

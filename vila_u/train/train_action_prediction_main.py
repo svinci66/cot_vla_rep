@@ -33,6 +33,10 @@ from vila_u.constants import (
     IGNORE_INDEX,
 )
 from vila_u.utils.action_tokenizer import actions_to_token_ids, select_action_token_ids
+from vila_u.utils.hybrid_attention import (
+    build_action_token_position_mask,
+    build_hybrid_attention_mask,
+)
 from vila_u.utils.tokenizer import tokenize_conversation
 
 local_rank = None
@@ -77,6 +81,10 @@ class ActionPredictionArguments:
     use_discrete_action_prediction: bool = field(
         default=True,
         metadata={"help": "Use autoregressive discrete action tokens instead of regression"}
+    )
+    use_hybrid_attention: bool = field(
+        default=True,
+        metadata={"help": "Use full attention inside the action token block"}
     )
 
 
@@ -125,14 +133,18 @@ class DiscreteActionPredictionDataCollator:
         model_max_length: int,
         mm_use_im_start_end: bool,
         action_token_ids,
+        action_slot_token_id: int,
         action_chunk_size: int,
         action_dim: int,
+        use_hybrid_attention: bool,
     ):
         self.tokenizer = tokenizer
         self.model_max_length = model_max_length
         self.mm_use_im_start_end = mm_use_im_start_end
         self.action_token_ids = action_token_ids
+        self.action_slot_token_id = action_slot_token_id
         self.num_action_tokens = action_chunk_size * action_dim
+        self.use_hybrid_attention = use_hybrid_attention
 
     def __call__(self, batch):
         images = torch.stack([item["observations"] for item in batch])
@@ -155,7 +167,14 @@ class DiscreteActionPredictionDataCollator:
                 self.action_token_ids,
                 num_bins=ACTION_NUM_BINS,
             )
-            input_ids = torch.cat([prompt_ids, action_token_ids], dim=0)
+            if self.use_hybrid_attention:
+                action_input_ids = torch.full_like(
+                    action_token_ids,
+                    fill_value=self.action_slot_token_id,
+                )
+            else:
+                action_input_ids = action_token_ids
+            input_ids = torch.cat([prompt_ids, action_input_ids], dim=0)
             labels = torch.cat(
                 [
                     torch.full_like(prompt_ids, IGNORE_INDEX),
@@ -193,6 +212,66 @@ class ActionPredictionTrainer(VILAUTrainer):
             core_model = core_model.module
 
         if getattr(core_model.config, "use_discrete_action_prediction", False):
+            if getattr(core_model.config, "use_hybrid_attention", False):
+                (
+                    _,
+                    position_ids,
+                    mm_attention_mask,
+                    past_key_values,
+                    inputs_embeds,
+                    mm_labels,
+                ) = core_model.prepare_inputs_labels_for_multimodal(
+                    input_ids=inputs["input_ids"],
+                    position_ids=None,
+                    attention_mask=inputs["attention_mask"],
+                    past_key_values=None,
+                    labels=inputs["labels"],
+                    images=inputs["images"],
+                )
+                hybrid_attention_mask = build_hybrid_attention_mask(
+                    mm_attention_mask,
+                    num_action_tokens=core_model.config.action_chunk_size * core_model.config.action_dim,
+                    dtype=inputs_embeds.dtype,
+                )
+                outputs = core_model.llm.model(
+                    input_ids=None,
+                    attention_mask=hybrid_attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=False,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
+                    seqlens_in_batch=None,
+                )
+                logits = core_model.llm.lm_head(outputs.last_hidden_state)
+                labels = mm_labels[:, :, 0]
+                action_token_count = (
+                    core_model.config.action_chunk_size * core_model.config.action_dim
+                )
+                action_position_mask = build_action_token_position_mask(
+                    mm_attention_mask,
+                    num_action_tokens=action_token_count,
+                )
+                batch_size = logits.shape[0]
+                action_logits = logits[action_position_mask].view(
+                    batch_size,
+                    action_token_count,
+                    logits.size(-1),
+                )
+                action_labels = labels[action_position_mask].view(
+                    batch_size,
+                    action_token_count,
+                )
+                loss = torch.nn.functional.cross_entropy(
+                    action_logits.reshape(-1, action_logits.size(-1)),
+                    action_labels.reshape(-1),
+                )
+                if return_outputs:
+                    return loss, {"logits": action_logits}
+                return loss
+
             outputs = model(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
@@ -297,6 +376,7 @@ def make_action_prediction_data_module(
     training_args: TrainingArguments,
     mm_use_im_start_end: bool,
     action_token_ids,
+    action_slot_token_id: int | None,
 ) -> Dict:
     """Create data module for action prediction training"""
     from vila_u.data.libero_dataset_v2 import LiberoGoalDataset
@@ -321,8 +401,10 @@ def make_action_prediction_data_module(
                 model_max_length=training_args.model_max_length,
                 mm_use_im_start_end=mm_use_im_start_end,
                 action_token_ids=action_token_ids,
+                action_slot_token_id=action_slot_token_id,
                 action_chunk_size=data_args.action_chunk_size,
                 action_dim=data_args.action_dim,
+                use_hybrid_attention=data_args.use_hybrid_attention,
             )
             if data_args.use_discrete_action_prediction
             else ActionPredictionDataCollator(
@@ -386,10 +468,13 @@ def train():
     # Enable action prediction
     config.use_discrete_action_prediction = action_args.use_discrete_action_prediction
     config.use_action_prediction = not action_args.use_discrete_action_prediction
+    config.use_hybrid_attention = action_args.use_hybrid_attention
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
     config.action_num_bins = ACTION_NUM_BINS
     attn_implementation = os.environ.get("ATTN_IMPLEMENTATION", "flash_attention_2")
+    if action_args.use_hybrid_attention and attn_implementation == "flash_attention_2":
+        attn_implementation = "eager"
     low_cpu_mem_usage = env_flag("LOW_CPU_MEM_USAGE", True)
 
     model = model_cls(
@@ -505,10 +590,13 @@ def train():
     model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
     model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
     action_token_ids = None
+    action_slot_token_id = None
     if action_args.use_discrete_action_prediction:
         action_token_ids = select_action_token_ids(tokenizer, num_bins=ACTION_NUM_BINS)
         model.config.action_token_ids = action_token_ids
         model.config.action_num_bins = ACTION_NUM_BINS
+        action_slot_token_id = action_token_ids[0]
+        model.config.action_slot_token_id = action_slot_token_id
 
     # Create data module for action prediction
     data_module = make_action_prediction_data_module(
@@ -518,6 +606,7 @@ def train():
         training_args=training_args,
         mm_use_im_start_end=data_args.mm_use_im_start_end,
         action_token_ids=action_token_ids,
+        action_slot_token_id=action_slot_token_id,
     )
 
     # Custom trainer for action prediction
