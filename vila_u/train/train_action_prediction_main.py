@@ -455,7 +455,11 @@ def train():
 
     set_seed(training_args.seed)
 
+    resume_training = env_flag("RESUME_TRAINING", True)
     resume_path, continue_training = get_checkpoint_path(training_args.output_dir)
+    if not resume_training:
+        resume_path = None
+        continue_training = True
 
     if not continue_training:
         print(f"Models has been ready under {training_args.output_dir}. Skip training")
