@@ -46,6 +46,11 @@ def resolve_model_path(model_path: str) -> str:
             return checkpoint_path
         return str(path)
 
+    if not path.exists() and path.name.startswith("tmp-checkpoint-"):
+        alt = path.with_name(path.name.replace("tmp-checkpoint-", "checkpoint-", 1))
+        if alt.is_dir():
+            return str(alt)
+
     raise FileNotFoundError(f"Model path does not exist: {path}")
 
 
