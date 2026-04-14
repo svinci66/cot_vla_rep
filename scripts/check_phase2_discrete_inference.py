@@ -25,8 +25,11 @@ from vila_u.model.builder import load_pretrained_model
 from vila_u.train.utils import get_checkpoint_path
 from vila_u.utils.action_tokenizer import (
     AllowedActionTokensLogitsProcessor,
+    bins_to_token_ids,
+    compute_selected_token_logits,
     token_ids_to_actions,
 )
+from vila_u.utils.hybrid_attention import build_hybrid_attention_mask
 from vila_u.utils.tokenizer import tokenize_conversation
 
 
@@ -153,7 +156,7 @@ def main():
     print("  ✓ predict_action() returned a valid action chunk")
     print()
 
-    print("[3/3] Token-level constrained generation check")
+    print("[3/3] Token-level generation check")
     prompt = build_prompt(model, sample["instruction"])
     input_ids = tokenize_conversation(
         [{"from": "human", "value": prompt}],
@@ -166,16 +169,70 @@ def main():
     image_tensor = image_tensor.to(next(model.parameters()).device)
 
     num_action_tokens = model.config.action_chunk_size * model.config.action_dim
-    output_ids = model.generate(
-        input_ids=input_ids,
-        images=image_tensor,
-        attention_mask=attention_mask,
-        do_sample=False,
-        max_new_tokens=num_action_tokens,
-        use_cache=True,
-        logits_processor=[AllowedActionTokensLogitsProcessor(action_token_ids)],
-    )
-    generated_action_ids = output_ids[:, -num_action_tokens:]
+    if getattr(model.config, "use_hybrid_attention", False):
+        action_slot_token_id = getattr(model.config, "action_slot_token_id", None)
+        assert action_slot_token_id is not None, "Hybrid attention requires action_slot_token_id"
+
+        action_slots = torch.full(
+            (1, num_action_tokens),
+            fill_value=action_slot_token_id,
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        full_input_ids = torch.cat([input_ids, action_slots], dim=1)
+        full_attention_mask = full_input_ids.ne(tokenizer.pad_token_id)
+
+        (
+            _,
+            position_ids,
+            mm_attention_mask,
+            past_key_values,
+            inputs_embeds,
+            _,
+        ) = model.prepare_inputs_labels_for_multimodal(
+            input_ids=full_input_ids,
+            position_ids=None,
+            attention_mask=full_attention_mask,
+            past_key_values=None,
+            labels=None,
+            images=image_tensor,
+        )
+        hybrid_attention_mask = build_hybrid_attention_mask(
+            mm_attention_mask,
+            num_action_tokens=num_action_tokens,
+            dtype=inputs_embeds.dtype,
+        )
+        outputs = model.llm.model(
+            input_ids=None,
+            attention_mask=hybrid_attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=False,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=True,
+            seqlens_in_batch=None,
+        )
+        action_hidden_states = outputs.last_hidden_state[:, -num_action_tokens:, :]
+        action_logits = compute_selected_token_logits(
+            action_hidden_states,
+            model.llm.lm_head,
+            action_token_ids,
+        )
+        predicted_bins = torch.argmax(action_logits, dim=-1)
+        generated_action_ids = bins_to_token_ids(predicted_bins, action_token_ids)
+    else:
+        output_ids = model.generate(
+            input_ids=input_ids,
+            images=image_tensor,
+            attention_mask=attention_mask,
+            do_sample=False,
+            max_new_tokens=num_action_tokens,
+            use_cache=True,
+            logits_processor=[AllowedActionTokensLogitsProcessor(action_token_ids)],
+        )
+        generated_action_ids = output_ids[:, -num_action_tokens:]
     allowed_ids = set(action_token_ids)
     all_valid = all(int(token_id) in allowed_ids for token_id in generated_action_ids.view(-1).tolist())
     decoded_actions = token_ids_to_actions(
