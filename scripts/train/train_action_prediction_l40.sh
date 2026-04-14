@@ -8,7 +8,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 # Editable configuration
-CONDA_ENV_NAME=${CONDA_ENV_NAME:-"vila_env"}
+CONDA_ENV_NAME=${CONDA_ENV_NAME:-"vila_env_fixed"}
 MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
 DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
 OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction-phase3-l40"}
@@ -16,9 +16,9 @@ CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 SINGLE_GPU_MODE=${SINGLE_GPU_MODE:-True}
 
 NUM_GPUS=${NUM_GPUS:-1}
-BATCH_SIZE=${BATCH_SIZE:-4}
-ACC_STEP=${ACC_STEP:-4}
-NUM_EPOCHS=${NUM_EPOCHS:-10}
+BATCH_SIZE=${BATCH_SIZE:-8}
+ACC_STEP=${ACC_STEP:-1}
+NUM_EPOCHS=${NUM_EPOCHS:-1}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}
 SAVE_STEPS=${SAVE_STEPS:-500}
@@ -39,18 +39,75 @@ LOW_CPU_MEM_USAGE=${LOW_CPU_MEM_USAGE:-True}
 USE_DEEPSPEED=${USE_DEEPSPEED:-False}
 USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
 SYNC_TRANSFORMERS_PATCH=${SYNC_TRANSFORMERS_PATCH:-True}
+RESUME_TRAINING=${RESUME_TRAINING:-False}
+AUTO_NEW_OUTPUT_DIR=${AUTO_NEW_OUTPUT_DIR:-True}
 
 if [ "$SUPPRESS_FUTURE_WARNING" = "True" ] || [ "$SUPPRESS_FUTURE_WARNING" = "true" ]; then
     export PYTHONWARNINGS="ignore::FutureWarning${PYTHONWARNINGS:+,$PYTHONWARNINGS}"
 fi
 
 if [ "$USE_HYBRID_ATTENTION" = "True" ] || [ "$USE_HYBRID_ATTENTION" = "true" ]; then
+    USE_HYBRID_ATTENTION=True
     ATTN_IMPLEMENTATION=eager
+else
+    USE_HYBRID_ATTENTION=False
+fi
+
+if [ "$SYNC_TRANSFORMERS_PATCH" = "True" ] || [ "$SYNC_TRANSFORMERS_PATCH" = "true" ]; then
+    SYNC_TRANSFORMERS_PATCH=True
+else
+    SYNC_TRANSFORMERS_PATCH=False
+fi
+
+if [ "$SINGLE_GPU_MODE" = "True" ] || [ "$SINGLE_GPU_MODE" = "true" ]; then
+    SINGLE_GPU_MODE=True
+else
+    SINGLE_GPU_MODE=False
+fi
+
+if [ "$RESUME_TRAINING" = "True" ] || [ "$RESUME_TRAINING" = "true" ]; then
+    RESUME_TRAINING=True
+else
+    RESUME_TRAINING=False
+fi
+
+if [ "$AUTO_NEW_OUTPUT_DIR" = "True" ] || [ "$AUTO_NEW_OUTPUT_DIR" = "true" ]; then
+    AUTO_NEW_OUTPUT_DIR=True
+else
+    AUTO_NEW_OUTPUT_DIR=False
 fi
 
 export ATTN_IMPLEMENTATION
 export LOW_CPU_MEM_USAGE
 export CUDA_VISIBLE_DEVICES
+export CONDA_ENV_NAME
+export OUTPUT_DIR
+export USE_HYBRID_ATTENTION
+export SYNC_TRANSFORMERS_PATCH
+export BATCH_SIZE
+export ACC_STEP
+export RESUME_TRAINING
+export AUTO_NEW_OUTPUT_DIR
+
+if [ "$RESUME_TRAINING" = "False" ] && [ -d "$OUTPUT_DIR" ]; then
+    has_old_state=False
+    if [ -f "$OUTPUT_DIR/config.json" ]; then
+        has_old_state=True
+    elif find "$OUTPUT_DIR" -maxdepth 1 -type d \( -name "checkpoint-*" -o -name "tmp-checkpoint-*" \) | grep -q .; then
+        has_old_state=True
+    fi
+
+    if [ "$has_old_state" = "True" ] || [ "$has_old_state" = "true" ]; then
+        if [ "$AUTO_NEW_OUTPUT_DIR" = "True" ]; then
+            timestamp=$(date +%Y%m%d_%H%M%S)
+            OUTPUT_DIR="${OUTPUT_DIR}-fresh-${timestamp}"
+            export OUTPUT_DIR
+        else
+            echo "Error: output directory already contains checkpoints/config and RESUME_TRAINING=False: $OUTPUT_DIR" >&2
+            exit 1
+        fi
+    fi
+fi
 
 # Activate environment if needed
 if [ -z "${CONDA_PREFIX:-}" ] && command -v conda >/dev/null 2>&1; then
@@ -133,6 +190,8 @@ echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
 echo "  Use DeepSpeed: $USE_DEEPSPEED"
 echo "  Use Hybrid Attention: $USE_HYBRID_ATTENTION"
 echo "  Sync Transformers Patch: $SYNC_TRANSFORMERS_PATCH"
+echo "  Resume Training: $RESUME_TRAINING"
+echo "  Auto New Output Dir: $AUTO_NEW_OUTPUT_DIR"
 echo "=========================================="
 
 train_args=(
