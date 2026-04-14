@@ -37,6 +37,8 @@ SUPPRESS_FUTURE_WARNING=${SUPPRESS_FUTURE_WARNING:-True}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
 LOW_CPU_MEM_USAGE=${LOW_CPU_MEM_USAGE:-True}
 USE_DEEPSPEED=${USE_DEEPSPEED:-False}
+USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
+SYNC_TRANSFORMERS_PATCH=${SYNC_TRANSFORMERS_PATCH:-True}
 
 if [ "$SUPPRESS_FUTURE_WARNING" = "True" ] || [ "$SUPPRESS_FUTURE_WARNING" = "true" ]; then
     export PYTHONWARNINGS="ignore::FutureWarning${PYTHONWARNINGS:+,$PYTHONWARNINGS}"
@@ -50,6 +52,13 @@ export CUDA_VISIBLE_DEVICES
 if [ -z "${CONDA_PREFIX:-}" ] && command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"
     conda activate "$CONDA_ENV_NAME"
+fi
+
+if [ "$SYNC_TRANSFORMERS_PATCH" = "True" ] || [ "$SYNC_TRANSFORMERS_PATCH" = "true" ]; then
+    site_pkg_path=$(python -c 'import site; print(site.getsitepackages()[0])')
+    if [ -d "./vila_u/train/transformers_replace/" ]; then
+        cp -r ./vila_u/train/transformers_replace/* "$site_pkg_path/transformers/"
+    fi
 fi
 
 # SLURM configuration
@@ -118,6 +127,8 @@ echo "  Suppress FutureWarning: $SUPPRESS_FUTURE_WARNING"
 echo "  Attention Backend: $ATTN_IMPLEMENTATION"
 echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
 echo "  Use DeepSpeed: $USE_DEEPSPEED"
+echo "  Use Hybrid Attention: $USE_HYBRID_ATTENTION"
+echo "  Sync Transformers Patch: $SYNC_TRANSFORMERS_PATCH"
 echo "=========================================="
 
 train_args=(
@@ -155,6 +166,7 @@ train_args=(
     --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
     --lazy_preprocess True
     --report_to "$REPORT_TO"
+    --use_hybrid_attention "$USE_HYBRID_ATTENTION"
     --action_chunk_size "$ACTION_CHUNK_SIZE"
     --action_dim "$ACTION_DIM"
     --remove_pause_intervals "$REMOVE_PAUSE_INTERVALS"
