@@ -33,6 +33,7 @@ from vila_u.utils.tokenizer import infer_stop_tokens, tokenize_conversation
 from vila_u.utils.action_tokenizer import (
     AllowedActionTokensLogitsProcessor,
     bins_to_token_ids,
+    compute_selected_token_logits,
     token_ids_to_actions,
 )
 
@@ -899,13 +900,12 @@ class VILAUMetaForCausalLM(ABC):
                     return_dict=True,
                     seqlens_in_batch=None,
                 )
-                logits = self.llm.lm_head(outputs.last_hidden_state)[:, -num_action_tokens:, :]
-                action_token_tensor = torch.as_tensor(
+                action_hidden_states = outputs.last_hidden_state[:, -num_action_tokens:, :]
+                action_logits = compute_selected_token_logits(
+                    action_hidden_states,
+                    self.llm.lm_head,
                     action_token_ids,
-                    dtype=torch.long,
-                    device=logits.device,
                 )
-                action_logits = logits.index_select(dim=-1, index=action_token_tensor)
                 predicted_bins = torch.argmax(action_logits, dim=-1)
                 generated_action_ids = bins_to_token_ids(predicted_bins, action_token_ids)
             else:

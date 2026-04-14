@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 import torch
+import torch.nn.functional as F
 from transformers import LogitsProcessor
 
 from vila_u.constants import ACTION_MAX, ACTION_MIN, ACTION_NUM_BINS
@@ -36,6 +37,23 @@ class AllowedActionTokensLogitsProcessor(LogitsProcessor):
         masked_scores = torch.full_like(scores, float("-inf"))
         masked_scores[:, allowed_ids] = scores[:, allowed_ids]
         return masked_scores
+
+
+def compute_selected_token_logits(
+    hidden_states: torch.Tensor,
+    lm_head,
+    token_ids: Sequence[int],
+) -> torch.Tensor:
+    token_tensor = torch.as_tensor(
+        token_ids,
+        dtype=torch.long,
+        device=hidden_states.device,
+    )
+    weight = lm_head.weight.index_select(0, token_tensor).to(hidden_states.dtype)
+    bias = None
+    if getattr(lm_head, "bias", None) is not None:
+        bias = lm_head.bias.index_select(0, token_tensor).to(hidden_states.dtype)
+    return F.linear(hidden_states, weight, bias)
 
 
 def select_action_token_ids(tokenizer, num_bins: int = ACTION_NUM_BINS) -> list[int]:

@@ -85,8 +85,24 @@ def test_allowed_action_token_logits_processor():
     print("✓ logits processor restricts generation to action tokens")
 
 
+def test_compute_selected_token_logits():
+    import torch.nn as nn
+    from vila_u.utils.action_tokenizer import compute_selected_token_logits
+
+    hidden_states = torch.randn(2, 3, 5)
+    lm_head = nn.Linear(5, 12, bias=True)
+    token_ids = [2, 4, 7, 9]
+
+    full_logits = lm_head(hidden_states)
+    selected_logits = compute_selected_token_logits(hidden_states, lm_head, token_ids)
+
+    assert torch.allclose(selected_logits, full_logits[..., token_ids], atol=1e-5)
+    print("✓ selected-token logits match sliced full-vocab logits")
+
+
 if __name__ == "__main__":
     test_select_action_token_ids()
     test_discretize_and_undiscretize()
     test_action_token_roundtrip()
     test_allowed_action_token_logits_processor()
+    test_compute_selected_token_logits()

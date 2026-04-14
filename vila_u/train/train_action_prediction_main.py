@@ -32,7 +32,12 @@ from vila_u.constants import (
     ACTION_NUM_BINS,
     IGNORE_INDEX,
 )
-from vila_u.utils.action_tokenizer import actions_to_token_ids, select_action_token_ids
+from vila_u.utils.action_tokenizer import (
+    actions_to_token_ids,
+    compute_selected_token_logits,
+    select_action_token_ids,
+    token_ids_to_bins,
+)
 from vila_u.utils.hybrid_attention import (
     build_action_token_position_mask,
     build_hybrid_attention_mask,
@@ -245,7 +250,6 @@ class ActionPredictionTrainer(VILAUTrainer):
                     return_dict=True,
                     seqlens_in_batch=None,
                 )
-                logits = core_model.llm.lm_head(outputs.last_hidden_state)
                 labels = mm_labels[:, :, 0]
                 action_token_count = (
                     core_model.config.action_chunk_size * core_model.config.action_dim
@@ -254,19 +258,28 @@ class ActionPredictionTrainer(VILAUTrainer):
                     mm_attention_mask,
                     num_action_tokens=action_token_count,
                 )
-                batch_size = logits.shape[0]
-                action_logits = logits[action_position_mask].view(
+                batch_size = outputs.last_hidden_state.shape[0]
+                action_hidden_states = outputs.last_hidden_state[action_position_mask].view(
                     batch_size,
                     action_token_count,
-                    logits.size(-1),
+                    outputs.last_hidden_state.size(-1),
                 )
                 action_labels = labels[action_position_mask].view(
                     batch_size,
                     action_token_count,
                 )
+                action_logits = compute_selected_token_logits(
+                    action_hidden_states,
+                    core_model.llm.lm_head,
+                    core_model.config.action_token_ids,
+                )
+                action_label_bins = token_ids_to_bins(
+                    action_labels,
+                    core_model.config.action_token_ids,
+                )
                 loss = torch.nn.functional.cross_entropy(
                     action_logits.reshape(-1, action_logits.size(-1)),
-                    action_labels.reshape(-1),
+                    action_label_bins.reshape(-1),
                 )
                 if return_outputs:
                     return loss, {"logits": action_logits}
