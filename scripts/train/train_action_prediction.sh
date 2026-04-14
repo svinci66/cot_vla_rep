@@ -8,7 +8,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 # Editable configuration
-CONDA_ENV_NAME=${CONDA_ENV_NAME:-"vila_env"}
+CONDA_ENV_NAME=${CONDA_ENV_NAME:-"vila_env_fixed"}
 MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
 DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
 OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction-phase3"}
@@ -43,12 +43,33 @@ if [ "$SUPPRESS_FUTURE_WARNING" = "True" ] || [ "$SUPPRESS_FUTURE_WARNING" = "tr
 fi
 
 if [ "$USE_HYBRID_ATTENTION" = "True" ] || [ "$USE_HYBRID_ATTENTION" = "true" ]; then
+    USE_HYBRID_ATTENTION=True
     ATTN_IMPLEMENTATION=eager
+else
+    USE_HYBRID_ATTENTION=False
+fi
+
+if [ "$SYNC_TRANSFORMERS_PATCH" = "True" ] || [ "$SYNC_TRANSFORMERS_PATCH" = "true" ]; then
+    SYNC_TRANSFORMERS_PATCH=True
+else
+    SYNC_TRANSFORMERS_PATCH=False
+fi
+
+if [ "$SINGLE_GPU_MODE" = "True" ] || [ "$SINGLE_GPU_MODE" = "true" ]; then
+    SINGLE_GPU_MODE=True
+else
+    SINGLE_GPU_MODE=False
 fi
 
 export ATTN_IMPLEMENTATION
 export LOW_CPU_MEM_USAGE
 export CUDA_VISIBLE_DEVICES
+export CONDA_ENV_NAME
+export OUTPUT_DIR
+export USE_HYBRID_ATTENTION
+export SYNC_TRANSFORMERS_PATCH
+export BATCH_SIZE
+export ACC_STEP
 
 # Activate environment if needed
 if [ -z "${CONDA_PREFIX:-}" ] && command -v conda >/dev/null 2>&1; then
