@@ -11,7 +11,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 CONDA_ENV_NAME=${CONDA_ENV_NAME:-"vila_env"}
 MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
 DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
-OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction"}
+OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction-phase3"}
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 SINGLE_GPU_MODE=${SINGLE_GPU_MODE:-True}
 
@@ -40,6 +40,10 @@ SYNC_TRANSFORMERS_PATCH=${SYNC_TRANSFORMERS_PATCH:-True}
 
 if [ "$SUPPRESS_FUTURE_WARNING" = "True" ] || [ "$SUPPRESS_FUTURE_WARNING" = "true" ]; then
     export PYTHONWARNINGS="ignore::FutureWarning${PYTHONWARNINGS:+,$PYTHONWARNINGS}"
+fi
+
+if [ "$USE_HYBRID_ATTENTION" = "True" ] || [ "$USE_HYBRID_ATTENTION" = "true" ]; then
+    ATTN_IMPLEMENTATION=eager
 fi
 
 export ATTN_IMPLEMENTATION
