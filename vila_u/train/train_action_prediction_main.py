@@ -26,14 +26,10 @@ from vila_u.train.utils import (
     mprint,
 )
 from vila_u.constants import (
-    DEFAULT_IMAGE_TOKEN,
-    DEFAULT_IM_START_TOKEN,
-    DEFAULT_IM_END_TOKEN,
     ACTION_NUM_BINS,
     IGNORE_INDEX,
 )
 from vila_u.utils.action_tokenizer import (
-    actions_to_token_ids,
     compute_selected_token_logits,
     select_action_token_ids,
     token_ids_to_bins,
@@ -42,7 +38,6 @@ from vila_u.utils.hybrid_attention import (
     build_action_token_position_mask,
     build_hybrid_attention_mask,
 )
-from vila_u.utils.tokenizer import tokenize_conversation
 
 local_rank = None
 
@@ -102,21 +97,8 @@ class ActionPredictionDataCollator:
     def __call__(self, batch):
         images = torch.stack([item["observations"] for item in batch])
         action_labels = torch.stack([item["action_labels"] for item in batch])
-
-        image_token = DEFAULT_IMAGE_TOKEN
-        if self.mm_use_im_start_end:
-            image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
-
-        prompts = [
-            tokenize_conversation(
-                [{"from": "human", "value": f"{image_token}\n{item['instructions']}"}],
-                self.tokenizer,
-                add_generation_prompt=True,
-            )
-            for item in batch
-        ]
         input_ids = pad_sequence(
-            prompts,
+            [item["prompt_ids"] for item in batch],
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id,
         )
@@ -153,25 +135,12 @@ class DiscreteActionPredictionDataCollator:
 
     def __call__(self, batch):
         images = torch.stack([item["observations"] for item in batch])
-        actions = torch.stack([item["action_labels"] for item in batch])
-
-        image_token = DEFAULT_IMAGE_TOKEN
-        if self.mm_use_im_start_end:
-            image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
 
         input_id_list = []
         label_list = []
-        for item, action in zip(batch, actions):
-            prompt_ids = tokenize_conversation(
-                [{"from": "human", "value": f"{image_token}\n{item['instructions']}"}],
-                self.tokenizer,
-                add_generation_prompt=True,
-            )
-            action_token_ids = actions_to_token_ids(
-                action.view(-1),
-                self.action_token_ids,
-                num_bins=ACTION_NUM_BINS,
-            )
+        for item in batch:
+            prompt_ids = item["prompt_ids"]
+            action_token_ids = item["action_token_ids"]
             if self.use_hybrid_attention:
                 action_input_ids = torch.full_like(
                     action_token_ids,
@@ -407,6 +376,9 @@ def make_action_prediction_data_module(
         image_size=data_args.image_size,
         remove_pause_intervals=data_args.remove_pause_intervals,
         pause_threshold=data_args.pause_threshold,
+        mm_use_im_start_end=mm_use_im_start_end,
+        action_token_ids=action_token_ids,
+        use_discrete_action_prediction=data_args.use_discrete_action_prediction,
     )
     training_args.sample_lens = [len(train_dataset)]
 

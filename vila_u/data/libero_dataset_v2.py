@@ -17,6 +17,10 @@ from torch.utils.data import Dataset
 from PIL import Image
 from typing import Optional
 
+from vila_u.constants import DEFAULT_IMAGE_TOKEN, DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN
+from vila_u.utils.action_tokenizer import actions_to_token_ids
+from vila_u.utils.tokenizer import tokenize_conversation
+
 
 class LiberoGoalDataset(Dataset):
     """
@@ -37,6 +41,9 @@ class LiberoGoalDataset(Dataset):
         image_size: int = 256,
         remove_pause_intervals: bool = True,
         pause_threshold: float = 0.01,
+        mm_use_im_start_end: bool = False,
+        action_token_ids=None,
+        use_discrete_action_prediction: bool = False,
     ):
         """
         Args:
@@ -55,6 +62,11 @@ class LiberoGoalDataset(Dataset):
         self.image_size = image_size
         self.remove_pause_intervals = remove_pause_intervals
         self.pause_threshold = pause_threshold
+        self.mm_use_im_start_end = mm_use_im_start_end
+        self.action_token_ids = action_token_ids
+        self.use_discrete_action_prediction = use_discrete_action_prediction
+        self._prompt_cache = {}
+        self._file_handles = {}
 
         # Build dataset index
         self.samples = self._build_index()
@@ -141,68 +153,94 @@ class LiberoGoalDataset(Dataset):
                     for filtered_t in range(num_samples - self.action_chunk_size):
                         # Get original timestep indices
                         original_t = non_pause_indices[filtered_t]
+                        if self.remove_pause_intervals:
+                            action_indices = non_pause_indices[
+                                filtered_t : filtered_t + self.action_chunk_size
+                            ]
+                            actions = all_actions[action_indices]
+                        else:
+                            actions = all_actions[original_t : original_t + self.action_chunk_size]
+                        actions = np.clip(actions, -1.0, 1.0).astype(np.float32)
 
-                        samples.append({
+                        sample = {
                             'file': filepath,
                             'demo': demo_name,
                             'timestep': original_t,
                             'filtered_timestep': filtered_t,
                             'instruction': instruction,
+                            'prompt_ids': self._get_prompt_ids(instruction),
+                            'action_labels': actions,
                             'non_pause_indices': non_pause_indices,
-                        })
+                        }
+                        if self.use_discrete_action_prediction:
+                            sample['action_token_ids'] = actions_to_token_ids(
+                                actions.reshape(-1),
+                                self.action_token_ids,
+                            ).cpu().numpy().astype(np.int64)
+
+                        samples.append(sample)
 
         return samples
+
+    def _get_prompt_ids(self, instruction: str) -> torch.Tensor:
+        if instruction not in self._prompt_cache:
+            image_token = DEFAULT_IMAGE_TOKEN
+            if self.mm_use_im_start_end:
+                image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+            prompt_ids = tokenize_conversation(
+                [{"from": "human", "value": f"{image_token}\n{instruction}"}],
+                self.tokenizer,
+                add_generation_prompt=True,
+            )
+            self._prompt_cache[instruction] = prompt_ids
+        return self._prompt_cache[instruction]
 
     def __len__(self):
         return len(self.samples)
 
+    def __del__(self):
+        for handle in self._file_handles.values():
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    def _get_h5_file(self, filepath: str):
+        if filepath not in self._file_handles:
+            self._file_handles[filepath] = h5py.File(filepath, 'r')
+        return self._file_handles[filepath]
+
     def __getitem__(self, idx):
         sample = self.samples[idx]
 
-        with h5py.File(sample['file'], 'r') as f:
-            demo = f['data'][sample['demo']]
+        f = self._get_h5_file(sample['file'])
+        demo = f['data'][sample['demo']]
 
-            # Load observation image at original timestep
-            t = sample['timestep']
-            obs_rgb = demo['obs/agentview_rgb'][t]  # [H, W, 3]
+        # Load observation image at original timestep
+        t = sample['timestep']
+        obs_rgb = demo['obs/agentview_rgb'][t]  # [H, W, 3]
 
-            # Convert to PIL Image
-            obs_image = Image.fromarray(obs_rgb.astype(np.uint8))
+        # Convert to PIL Image
+        obs_image = Image.fromarray(obs_rgb.astype(np.uint8))
 
-            # Resize to 256x256 and preprocess using VILA-U's image_processor
-            # The image_processor will handle normalization
-            obs_tensor = self.image_processor.preprocess(
-                obs_image,
-                return_tensors='pt',
-                do_resize=True,
-                size={'height': self.image_size, 'width': self.image_size},
-            )['pixel_values'].squeeze(0)  # [3, 256, 256]
+        # Resize to 256x256 and preprocess using VILA-U's image_processor
+        # The image_processor will handle normalization
+        obs_tensor = self.image_processor.preprocess(
+            obs_image,
+            return_tensors='pt',
+            do_resize=True,
+            size={'height': self.image_size, 'width': self.image_size},
+        )['pixel_values'].squeeze(0)  # [3, 256, 256]
 
-            # Load action sequence
-            if self.remove_pause_intervals:
-                # Get filtered action indices
-                non_pause_indices = sample['non_pause_indices']
-                filtered_t = sample['filtered_timestep']
-
-                # Get next action_chunk_size actions (from filtered sequence)
-                action_indices = non_pause_indices[
-                    filtered_t : filtered_t + self.action_chunk_size
-                ]
-                actions = demo['actions'][action_indices]  # [chunk, 7]
-            else:
-                # Get actions directly
-                actions = demo['actions'][t : t + self.action_chunk_size]  # [chunk, 7]
-
-            # Normalize actions to [-1, 1]
-            # LIBERO actions are typically already normalized, but we clip to be safe
-            actions = np.clip(actions, -1.0, 1.0)
-            action_tensor = torch.from_numpy(actions).float()
-
-        return {
+        result = {
             'observations': obs_tensor,  # [3, 256, 256]
             'instructions': sample['instruction'],  # str
-            'action_labels': action_tensor,  # [chunk_size, 7]
+            'prompt_ids': sample['prompt_ids'],
+            'action_labels': torch.from_numpy(sample['action_labels']).float(),  # [chunk_size, 7]
         }
+        if self.use_discrete_action_prediction:
+            result['action_token_ids'] = torch.from_numpy(sample['action_token_ids']).long()
+        return result
 
 
 def collate_fn(batch):
