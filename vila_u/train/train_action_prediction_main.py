@@ -238,9 +238,16 @@ class ActionPredictionTrainer(VILAUTrainer):
                     num_action_tokens=core_model.config.action_chunk_size * core_model.config.action_dim,
                     dtype=inputs_embeds.dtype,
                 )
+                action_token_count = (
+                    core_model.config.action_chunk_size * core_model.config.action_dim
+                )
+                use_flash_hybrid = (
+                    getattr(core_model.llm.config, "_attn_implementation", None)
+                    == "flash_attention_2"
+                )
                 outputs = core_model.llm.model(
                     input_ids=None,
-                    attention_mask=hybrid_attention_mask,
+                    attention_mask=mm_attention_mask if use_flash_hybrid else hybrid_attention_mask,
                     position_ids=position_ids,
                     past_key_values=past_key_values,
                     inputs_embeds=inputs_embeds,
@@ -248,12 +255,10 @@ class ActionPredictionTrainer(VILAUTrainer):
                     output_attentions=False,
                     output_hidden_states=False,
                     return_dict=True,
-                    seqlens_in_batch=None,
+                    seqlens_in_batch=mm_attention_mask.sum(dim=-1, dtype=torch.int32) if use_flash_hybrid else None,
+                    num_action_tokens=action_token_count if use_flash_hybrid else None,
                 )
                 labels = mm_labels[:, :, 0]
-                action_token_count = (
-                    core_model.config.action_chunk_size * core_model.config.action_dim
-                )
                 action_position_mask = build_action_token_position_mask(
                     mm_attention_mask,
                     num_action_tokens=action_token_count,

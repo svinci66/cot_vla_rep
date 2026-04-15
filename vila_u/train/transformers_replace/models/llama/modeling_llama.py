@@ -425,6 +425,7 @@ class LlamaFlashAttention2(LlamaAttention):
         output_attentions: bool = False,
         use_cache: bool = False,
         seqlens_in_batch: Optional[torch.LongTensor] = None,
+        num_action_tokens: Optional[int] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         # LlamaFlashAttention2 attention does not support output_attentions
@@ -496,9 +497,28 @@ class LlamaFlashAttention2(LlamaAttention):
             key_states = key_states.to(target_dtype)
             value_states = value_states.to(target_dtype)
 
-        attn_output = self._flash_attention_forward(
-            query_states, key_states, value_states, attention_mask, q_len, dropout=dropout_rate, seqlens_in_batch=seqlens_in_batch
-        )
+        if (
+            num_action_tokens is not None
+            and num_action_tokens > 0
+            and attention_mask is not None
+            and past_key_value is None
+            and not use_cache
+        ):
+            attn_output = self._flash_hybrid_attention_forward(
+                query_states,
+                key_states,
+                value_states,
+                attention_mask=attention_mask,
+                query_length=q_len,
+                num_action_tokens=num_action_tokens,
+                dropout=dropout_rate,
+                softmax_scale=None,
+                seqlens_in_batch=seqlens_in_batch,
+            )
+        else:
+            attn_output = self._flash_attention_forward(
+                query_states, key_states, value_states, attention_mask, q_len, dropout=dropout_rate, seqlens_in_batch=seqlens_in_batch
+            )
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -561,6 +581,109 @@ class LlamaFlashAttention2(LlamaAttention):
 
         return attn_output
 
+    def _flash_hybrid_attention_forward(
+        self,
+        query_states,
+        key_states,
+        value_states,
+        attention_mask,
+        query_length,
+        num_action_tokens,
+        dropout=0.0,
+        softmax_scale=None,
+        seqlens_in_batch=None,
+    ):
+        batch_size = query_states.shape[0]
+        attention_mask = attention_mask.bool()
+        if seqlens_in_batch is None:
+            seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
+
+        valid_lens = seqlens_in_batch.tolist()
+        output = torch.zeros_like(query_states)
+
+        def _build_cu(lengths, device):
+            cu = [0]
+            for length in lengths:
+                cu.append(cu[-1] + length)
+            return torch.tensor(cu, dtype=torch.int32, device=device)
+
+        prefix_q, prefix_k, prefix_v = [], [], []
+        prefix_meta = []
+        prefix_lengths = []
+
+        action_q, full_k, full_v = [], [], []
+        action_meta = []
+        action_q_lengths = []
+        full_k_lengths = []
+
+        for batch_idx, valid_len in enumerate(valid_lens):
+            valid_len = int(valid_len)
+            action_len = min(num_action_tokens, valid_len)
+            prefix_len = valid_len - action_len
+
+            if prefix_len > 0:
+                prefix_q.append(query_states[batch_idx, :prefix_len])
+                prefix_k.append(key_states[batch_idx, :prefix_len])
+                prefix_v.append(value_states[batch_idx, :prefix_len])
+                prefix_meta.append((batch_idx, prefix_len))
+                prefix_lengths.append(prefix_len)
+
+            if action_len > 0:
+                action_q.append(query_states[batch_idx, prefix_len:valid_len])
+                full_k.append(key_states[batch_idx, :valid_len])
+                full_v.append(value_states[batch_idx, :valid_len])
+                action_meta.append((batch_idx, prefix_len, valid_len))
+                action_q_lengths.append(action_len)
+                full_k_lengths.append(valid_len)
+
+        if prefix_lengths:
+            prefix_q_cat = torch.cat(prefix_q, dim=0)
+            prefix_k_cat = torch.cat(prefix_k, dim=0)
+            prefix_v_cat = torch.cat(prefix_v, dim=0)
+            prefix_cu = _build_cu(prefix_lengths, prefix_q_cat.device)
+            prefix_out = flash_attn_varlen_func(
+                prefix_q_cat,
+                prefix_k_cat,
+                prefix_v_cat,
+                cu_seqlens_q=prefix_cu,
+                cu_seqlens_k=prefix_cu,
+                max_seqlen_q=max(prefix_lengths),
+                max_seqlen_k=max(prefix_lengths),
+                dropout_p=dropout,
+                softmax_scale=softmax_scale,
+                causal=True,
+            )
+            start = 0
+            for batch_idx, prefix_len in prefix_meta:
+                output[batch_idx, :prefix_len] = prefix_out[start : start + prefix_len]
+                start += prefix_len
+
+        if action_q_lengths:
+            action_q_cat = torch.cat(action_q, dim=0)
+            full_k_cat = torch.cat(full_k, dim=0)
+            full_v_cat = torch.cat(full_v, dim=0)
+            action_cu = _build_cu(action_q_lengths, action_q_cat.device)
+            full_cu = _build_cu(full_k_lengths, full_k_cat.device)
+            action_out = flash_attn_varlen_func(
+                action_q_cat,
+                full_k_cat,
+                full_v_cat,
+                cu_seqlens_q=action_cu,
+                cu_seqlens_k=full_cu,
+                max_seqlen_q=max(action_q_lengths),
+                max_seqlen_k=max(full_k_lengths),
+                dropout_p=dropout,
+                softmax_scale=softmax_scale,
+                causal=False,
+            )
+            start = 0
+            for batch_idx, prefix_len, valid_len in action_meta:
+                action_len = valid_len - prefix_len
+                output[batch_idx, prefix_len:valid_len] = action_out[start : start + action_len]
+                start += action_len
+
+        return output
+
     def _upad_input(self, query_layer, key_layer, value_layer, attention_mask, query_length, seqlens_in_batch):
         indices_k, cu_seqlens_k, max_seqlen_in_batch_k = _get_unpad_data(attention_mask, seqlens_in_batch=seqlens_in_batch)
         batch_size, kv_seq_len, num_key_value_heads, head_dim = key_layer.shape
@@ -621,6 +744,7 @@ class LlamaDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         seqlens_in_batch: Optional[torch.LongTensor] = None,
+        num_action_tokens: Optional[int] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -655,6 +779,7 @@ class LlamaDecoderLayer(nn.Module):
             output_attentions=output_attentions,
             use_cache=use_cache,
             seqlens_in_batch=seqlens_in_batch,
+            num_action_tokens=num_action_tokens,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -825,6 +950,7 @@ class LlamaModel(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         seqlens_in_batch: Optional[torch.LongTensor] = None,
+        num_action_tokens: Optional[int] = None,
         vision_tower = None,
         mm_projector = None,
         image_ids = [],
@@ -874,7 +1000,9 @@ class LlamaModel(LlamaPreTrainedModel):
                 # print(input_ids)
                 inputs_embeds = self.embed_tokens(input_ids)
 
-        attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
+        attention_mask = attention_mask if (
+            attention_mask is not None and (0 in attention_mask or num_action_tokens is not None)
+        ) else None
 
         # embed positions
         hidden_states = inputs_embeds
@@ -906,7 +1034,8 @@ class LlamaModel(LlamaPreTrainedModel):
                     past_key_value,
                     output_attentions,
                     use_cache,
-                    seqlens_in_batch
+                    seqlens_in_batch,
+                    num_action_tokens,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -916,7 +1045,8 @@ class LlamaModel(LlamaPreTrainedModel):
                     past_key_value=past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
-                    seqlens_in_batch=seqlens_in_batch
+                    seqlens_in_batch=seqlens_in_batch,
+                    num_action_tokens=num_action_tokens,
                 )
 
             hidden_states = layer_outputs[0]

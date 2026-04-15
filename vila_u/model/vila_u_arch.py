@@ -901,9 +901,13 @@ class VILAUMetaForCausalLM(ABC):
                     num_action_tokens=num_action_tokens,
                     dtype=inputs_embeds.dtype,
                 )
+                use_flash_hybrid = (
+                    getattr(self.llm.config, "_attn_implementation", None)
+                    == "flash_attention_2"
+                )
                 outputs = self.llm.model(
                     input_ids=None,
-                    attention_mask=hybrid_attention_mask,
+                    attention_mask=mm_attention_mask if use_flash_hybrid else hybrid_attention_mask,
                     position_ids=position_ids,
                     past_key_values=past_key_values,
                     inputs_embeds=inputs_embeds,
@@ -911,7 +915,8 @@ class VILAUMetaForCausalLM(ABC):
                     output_attentions=False,
                     output_hidden_states=False,
                     return_dict=True,
-                    seqlens_in_batch=None,
+                    seqlens_in_batch=mm_attention_mask.sum(dim=-1, dtype=torch.int32) if use_flash_hybrid else None,
+                    num_action_tokens=num_action_tokens if use_flash_hybrid else None,
                 )
                 action_hidden_states = outputs.last_hidden_state[:, -num_action_tokens:, :]
                 action_logits = compute_selected_token_logits(
