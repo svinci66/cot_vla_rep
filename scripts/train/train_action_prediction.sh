@@ -21,11 +21,15 @@ ACC_STEP=${ACC_STEP:-1}
 NUM_EPOCHS=${NUM_EPOCHS:-1}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}
-SAVE_STEPS=${SAVE_STEPS:-500}
+SAVE_STEPS=${SAVE_STEPS:-2000}
+LOGGING_STEPS=${LOGGING_STEPS:-50}
 MASTER_PORT=${MASTER_PORT:-25001}
 
 IMAGE_ASPECT_RATIO=${IMAGE_ASPECT_RATIO:-"resize"}
 IMAGE_SIZE=${IMAGE_SIZE:-256}
+MODEL_MAX_LENGTH=${MODEL_MAX_LENGTH:-512}
+DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-8}
+GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-False}
 ACTION_CHUNK_SIZE=${ACTION_CHUNK_SIZE:-10}
 ACTION_DIM=${ACTION_DIM:-7}
 REMOVE_PAUSE_INTERVALS=${REMOVE_PAUSE_INTERVALS:-True}
@@ -84,6 +88,11 @@ export USE_HYBRID_ATTENTION
 export SYNC_TRANSFORMERS_PATCH
 export BATCH_SIZE
 export ACC_STEP
+export SAVE_STEPS
+export LOGGING_STEPS
+export MODEL_MAX_LENGTH
+export DATALOADER_NUM_WORKERS
+export GRADIENT_CHECKPOINTING
 export RESUME_TRAINING
 export AUTO_NEW_OUTPUT_DIR
 
@@ -179,7 +188,12 @@ echo "  Batch Size: $bs per device"
 echo "  Gradient Accumulation: $acc_step"
 echo "  Effective Batch Size: $effective_bs"
 echo "  Image Size: $IMAGE_SIZE"
+echo "  Model Max Length: $MODEL_MAX_LENGTH"
+echo "  Dataloader Workers: $DATALOADER_NUM_WORKERS"
+echo "  Gradient Checkpointing: $GRADIENT_CHECKPOINTING"
 echo "  Action Chunk Size: $ACTION_CHUNK_SIZE"
+echo "  Save Steps: $SAVE_STEPS"
+echo "  Logging Steps: $LOGGING_STEPS"
 echo "  Suppress FutureWarning: $SUPPRESS_FUTURE_WARNING"
 echo "  Attention Backend: $ATTN_IMPLEMENTATION"
 echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
@@ -219,11 +233,11 @@ train_args=(
     --weight_decay 0.
     --warmup_ratio "$WARMUP_RATIO"
     --lr_scheduler_type cosine
-    --logging_steps 10
+    --logging_steps "$LOGGING_STEPS"
     --tf32 True
-    --model_max_length 2048
-    --gradient_checkpointing True
-    --dataloader_num_workers 4
+    --model_max_length "$MODEL_MAX_LENGTH"
+    --gradient_checkpointing "$GRADIENT_CHECKPOINTING"
+    --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
     --lazy_preprocess True
     --report_to "$REPORT_TO"
     --use_hybrid_attention "$USE_HYBRID_ATTENTION"
