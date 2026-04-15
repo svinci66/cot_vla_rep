@@ -34,7 +34,7 @@ ACTION_CHUNK_SIZE=${ACTION_CHUNK_SIZE:-10}
 ACTION_DIM=${ACTION_DIM:-7}
 REMOVE_PAUSE_INTERVALS=${REMOVE_PAUSE_INTERVALS:-True}
 PAUSE_THRESHOLD=${PAUSE_THRESHOLD:-0.01}
-REPORT_TO=${REPORT_TO:-wandb}
+REPORT_TO=${REPORT_TO:-none}
 SUPPRESS_FUTURE_WARNING=${SUPPRESS_FUTURE_WARNING:-True}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-eager}
 LOW_CPU_MEM_USAGE=${LOW_CPU_MEM_USAGE:-True}
@@ -68,6 +68,12 @@ if [ "$SINGLE_GPU_MODE" = "True" ] || [ "$SINGLE_GPU_MODE" = "true" ]; then
     SINGLE_GPU_MODE=True
 else
     SINGLE_GPU_MODE=False
+fi
+
+if [ "$GRADIENT_CHECKPOINTING" = "True" ] || [ "$GRADIENT_CHECKPOINTING" = "true" ]; then
+    GRADIENT_CHECKPOINTING=True
+else
+    GRADIENT_CHECKPOINTING=False
 fi
 
 if [ "$RESUME_TRAINING" = "True" ] || [ "$RESUME_TRAINING" = "true" ]; then
@@ -241,7 +247,6 @@ train_args=(
     --logging_steps "$LOGGING_STEPS"
     --tf32 True
     --model_max_length "$MODEL_MAX_LENGTH"
-    --gradient_checkpointing "$GRADIENT_CHECKPOINTING"
     --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
     --lazy_preprocess True
     --report_to "$REPORT_TO"
@@ -251,6 +256,10 @@ train_args=(
     --remove_pause_intervals "$REMOVE_PAUSE_INTERVALS"
     --pause_threshold "$PAUSE_THRESHOLD"
 )
+
+if [ "$GRADIENT_CHECKPOINTING" = "True" ]; then
+    train_args+=(--gradient_checkpointing True)
+fi
 
 if [ "$USE_DEEPSPEED" = "True" ] || [ "$USE_DEEPSPEED" = "true" ]; then
     train_args+=(--deepspeed ./scripts/zero2.json)
