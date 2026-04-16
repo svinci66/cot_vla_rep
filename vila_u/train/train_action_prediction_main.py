@@ -9,6 +9,10 @@ import pathlib
 import torch
 import transformers
 
+# Enable cuDNN auto-tuner for faster convolutions
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.enabled = True
+
 from typing import Dict, Tuple, cast
 from dataclasses import dataclass, field
 from torch.nn.utils.rnn import pad_sequence
