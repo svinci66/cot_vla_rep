@@ -463,6 +463,7 @@ def train():
     config.use_discrete_action_prediction = action_args.use_discrete_action_prediction
     config.use_action_prediction = not action_args.use_discrete_action_prediction
     config.use_hybrid_attention = action_args.use_hybrid_attention
+    config.tune_depth_transformer = True
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
     config.action_num_bins = ACTION_NUM_BINS
@@ -486,18 +487,20 @@ def train():
     mprint(f"Tunable parameters:\nlanguage model {training_args.tune_language_model}")
 
     if model.get_vision_tower():
-        model.get_vision_tower().requires_grad_(training_args.tune_vision_tower)
+        training_args.tune_vision_tower = False
+        model.config.tune_vision_tower = False
+        model.get_vision_tower().requires_grad_(False)
         model.get_mm_projector().requires_grad_(training_args.tune_mm_projector)
         if isinstance(model.get_vision_tower(), RQVAESIGLIPTransformerVisionTower):
+            model.get_vision_tower().vision_tower.rqvaesiglip.requires_grad_(False)
             model.get_vision_tower().vision_tower.rqvaesiglip.eval()
-            model.get_vision_tower().vision_tower.rqtransformer.requires_grad_(
-                training_args.tune_vision_tower
-            )
-            if not training_args.tune_vision_tower:
-                model.get_vision_tower().vision_tower.rqtransformer.eval()
+            model.get_vision_tower().vision_tower.rqtransformer.requires_grad_(True)
+            model.get_vision_tower().vision_tower.rqtransformer.train()
+            model.config.tune_depth_transformer = True
         else:
             raise NotImplementedError()
         print(f"vision tower {training_args.tune_vision_tower}")
+        print("depth transformer True")
         print(f"mm projector {training_args.tune_mm_projector}")
 
     # Action head is always trainable
@@ -509,6 +512,7 @@ def train():
         training_args.tune_language_model,
         training_args.tune_vision_tower,
         training_args.tune_mm_projector,
+        getattr(model.config, "tune_depth_transformer", False),
         hasattr(model, 'action_head')
     ]):
         logging.warning(

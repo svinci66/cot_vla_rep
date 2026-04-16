@@ -237,6 +237,13 @@ class VILAUMetaModel(ABC):
                 logging.warning("Caution: Your LLM is currently in training mode, ensuring accurate gradient computation. Please be vigilant, particularly regarding BatchNorm and Dropout operations.")
             if self.get_vision_tower() and not getattr(self.config, "tune_vision_tower", False):
                 self.get_vision_tower().eval()
+                if isinstance(self.get_vision_tower(), RQVAESIGLIPTransformerVisionTower):
+                    self.get_vision_tower().vision_tower.rqvaesiglip.eval()
+                    if any(
+                        p.requires_grad
+                        for p in self.get_vision_tower().vision_tower.rqtransformer.parameters()
+                    ):
+                        self.get_vision_tower().vision_tower.rqtransformer.train()
             if self.get_mm_projector() and not getattr(self.config, "tune_mm_projector", False):
                 self.get_mm_projector().eval()
     

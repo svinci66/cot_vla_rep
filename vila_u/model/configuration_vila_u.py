@@ -46,3 +46,4 @@ class VILAUConfig(PretrainedConfig):
         self.action_token_ids = kwargs.pop("action_token_ids", None)
         self.action_slot_token_id = kwargs.pop("action_slot_token_id", None)
         self.use_hybrid_attention = kwargs.pop("use_hybrid_attention", False)
+        self.tune_depth_transformer = kwargs.pop("tune_depth_transformer", False)
