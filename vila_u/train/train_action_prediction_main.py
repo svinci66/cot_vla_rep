@@ -622,6 +622,13 @@ def train():
     # Add auto-resume callback
     trainer.add_callback(AutoResumeCallback())
 
+    # Add performance profiling (optional, controlled by env var)
+    enable_profiling = env_flag("ENABLE_PROFILING", False)
+    if enable_profiling:
+        from vila_u.utils.quick_profiling import add_profiling_hooks
+        profiler = add_profiling_hooks(trainer, log_interval=50)
+        print("Performance profiling enabled (logging every 50 steps)")
+
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     trainer.save_state()
