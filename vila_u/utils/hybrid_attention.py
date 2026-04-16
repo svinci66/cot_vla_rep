@@ -58,16 +58,14 @@ def build_hybrid_attention_mask(
     allowed = causal_base.unsqueeze(0).expand(batch_size, -1, -1).clone()
 
     # Vectorized action token full attention
-    # For each sample, action tokens (last num_action_tokens valid positions)
-    # should attend to all valid positions
     if num_action_tokens > 0:
         # Create range tensors
-        row_idx = torch.arange(seq_len, device=device).unsqueeze(0)  # [1, L]
-        col_idx = torch.arange(seq_len, device=device).unsqueeze(1)  # [L, 1]
+        row_idx = torch.arange(seq_len, device=device).view(1, seq_len, 1)  # [1, L, 1]
+        col_idx = torch.arange(seq_len, device=device).view(1, 1, seq_len)  # [1, 1, L]
 
         # Compute action start positions: valid_len - num_action_tokens
-        action_starts = (valid_lens - num_action_tokens).clamp(min=0).unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
-        valid_lens_expanded = valid_lens.unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+        action_starts = (valid_lens - num_action_tokens).clamp(min=0).view(batch_size, 1, 1)  # [B, 1, 1]
+        valid_lens_expanded = valid_lens.view(batch_size, 1, 1)  # [B, 1, 1]
 
         # Mask for action token rows: row_idx >= action_start and row_idx < valid_len
         is_action_row = (row_idx >= action_starts) & (row_idx < valid_lens_expanded)  # [B, L, 1]
@@ -80,11 +78,15 @@ def build_hybrid_attention_mask(
         allowed = allowed | action_attention
 
     # Handle padding: padding positions attend only to themselves
-    # Create padding mask: positions >= valid_len
-    is_padding = row_idx >= valid_lens.unsqueeze(1).unsqueeze(2)  # [B, L, 1]
-    is_self = (row_idx.unsqueeze(0) == col_idx.unsqueeze(0))  # [1, L, L]
-    padding_self_attention = is_padding & is_self
-    allowed = allowed | padding_self_attention.squeeze(2).unsqueeze(1).expand(-1, seq_len, -1)
+    row_idx_2d = torch.arange(seq_len, device=device).view(1, seq_len, 1)  # [1, L, 1]
+    col_idx_2d = torch.arange(seq_len, device=device).view(1, 1, seq_len)  # [1, 1, L]
+    valid_lens_2d = valid_lens.view(batch_size, 1, 1)  # [B, 1, 1]
+
+    is_padding = row_idx_2d >= valid_lens_2d  # [B, L, 1]
+    is_self = (row_idx_2d == col_idx_2d)  # [1, L, L]
+    padding_self_attention = is_padding & is_self  # [B, L, L]
+
+    allowed = allowed | padding_self_attention
 
     # Convert to additive mask
     disallowed = torch.zeros(batch_size, 1, seq_len, seq_len, dtype=dtype, device=device)
