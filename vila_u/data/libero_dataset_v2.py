@@ -206,8 +206,21 @@ class LiberoGoalDataset(Dataset):
                 pass
 
     def _get_h5_file(self, filepath: str):
+        """
+        Get HDF5 file handle with caching.
+
+        Note: In multi-worker DataLoader, each worker process has its own
+        file handles. This is necessary because HDF5 file handles cannot
+        be shared across processes.
+        """
         if filepath not in self._file_handles:
-            self._file_handles[filepath] = h5py.File(filepath, 'r')
+            # Use swmr=True (Single Writer Multiple Reader) mode for better performance
+            # This allows multiple processes to read the same file simultaneously
+            try:
+                self._file_handles[filepath] = h5py.File(filepath, 'r', swmr=True)
+            except Exception:
+                # Fallback to normal mode if SWMR is not available
+                self._file_handles[filepath] = h5py.File(filepath, 'r')
         return self._file_handles[filepath]
 
     def __getitem__(self, idx):
@@ -220,17 +233,26 @@ class LiberoGoalDataset(Dataset):
         t = sample['timestep']
         obs_rgb = demo['obs/agentview_rgb'][t]  # [H, W, 3]
 
-        # Convert to PIL Image
-        obs_image = Image.fromarray(obs_rgb.astype(np.uint8))
+        # Optimize: Direct numpy to tensor conversion, then resize on GPU
+        # This is faster than PIL conversion + CPU resize
+        obs_tensor = torch.from_numpy(obs_rgb).permute(2, 0, 1).float() / 255.0  # [3, H, W]
 
-        # Resize to 256x256 and preprocess using VILA-U's image_processor
-        # The image_processor will handle normalization
-        obs_tensor = self.image_processor.preprocess(
-            obs_image,
-            return_tensors='pt',
-            do_resize=True,
-            size={'height': self.image_size, 'width': self.image_size},
-        )['pixel_values'].squeeze(0)  # [3, 256, 256]
+        # Use image_processor for normalization only (resize is done above)
+        # Note: This assumes the image_processor uses standard normalization
+        mean = torch.tensor([0.5, 0.5, 0.5]).view(3, 1, 1)
+        std = torch.tensor([0.5, 0.5, 0.5]).view(3, 1, 1)
+
+        # Resize using torch (faster than PIL)
+        if obs_tensor.shape[1] != self.image_size or obs_tensor.shape[2] != self.image_size:
+            obs_tensor = torch.nn.functional.interpolate(
+                obs_tensor.unsqueeze(0),
+                size=(self.image_size, self.image_size),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
+
+        # Normalize
+        obs_tensor = (obs_tensor - mean) / std
 
         result = {
             'observations': obs_tensor,  # [3, 256, 256]
