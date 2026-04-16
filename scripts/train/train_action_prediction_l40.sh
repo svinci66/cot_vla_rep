@@ -253,9 +253,6 @@ train_args=(
     --tf32 True
     --model_max_length "$MODEL_MAX_LENGTH"
     --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
-    --dataloader_prefetch_factor "$DATALOADER_PREFETCH_FACTOR"
-    --dataloader_persistent_workers "$DATALOADER_PERSISTENT_WORKERS"
-    --dataloader_pin_memory True
     --lazy_preprocess True
     --report_to "$REPORT_TO"
     --use_hybrid_attention "$USE_HYBRID_ATTENTION"
