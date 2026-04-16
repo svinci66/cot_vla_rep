@@ -579,7 +579,7 @@ class VILAUMetaForCausalLM(ABC):
             new_labels.append(torch.cat(cur_labels, 0))
 
         new_inputs_embeds = torch.nn.utils.rnn.pad_sequence(
-            new_inputs_embeds, batch_first=True, padding_value=self.llm.pad_token_id
+            new_inputs_embeds, batch_first=True, padding_value=0.0
         )
         new_position_ids = torch.nn.utils.rnn.pad_sequence(new_position_ids, batch_first=True, padding_value=-1)
         new_labels = torch.nn.utils.rnn.pad_sequence(new_labels, batch_first=True, padding_value=IGNORE_INDEX)
