@@ -507,6 +507,32 @@ def train():
         print("depth transformer True")
         print(f"mm projector {training_args.tune_mm_projector}")
 
+    # Apply torch.compile if enabled (PyTorch 2.0+)
+    use_torch_compile = env_flag("USE_TORCH_COMPILE", False)
+    if use_torch_compile:
+        if hasattr(torch, 'compile'):
+            print("=" * 80)
+            print("Compiling model with torch.compile...")
+            print("This will take a few minutes on first run but speeds up training significantly.")
+            print("=" * 80)
+
+            compile_mode = os.environ.get("TORCH_COMPILE_MODE", "default")
+
+            try:
+                # Compile the model
+                # Note: We compile the whole model, not individual components
+                model = torch.compile(model, mode=compile_mode)
+                print(f"✓ Model compiled successfully with mode='{compile_mode}'")
+                print("=" * 80)
+            except Exception as e:
+                print(f"⚠ Warning: torch.compile failed: {e}")
+                print("Continuing without compilation...")
+                print("=" * 80)
+        else:
+            print("⚠ Warning: torch.compile not available (requires PyTorch >= 2.0)")
+            print(f"Current PyTorch version: {torch.__version__}")
+            print("=" * 80)
+
     # Action head is always trainable
     if hasattr(model, 'action_head'):
         model.action_head.requires_grad_(True)
