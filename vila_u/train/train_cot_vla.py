@@ -429,6 +429,8 @@ def train():
             model_args.model_name_or_path,
             resume=resume_from_checkpoint
         )
+        if getattr(config, "resume_path", None) is None:
+            config.resume_path = model_args.model_name_or_path
 
     # Phase 4: Set CoT-VLA configuration
     config.use_visual_cot = cot_args.use_visual_cot
