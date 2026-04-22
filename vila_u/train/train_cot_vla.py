@@ -62,6 +62,7 @@ def env_flag(name: str, default: bool) -> bool:
 class CoTVLAArguments:
     """Arguments for CoT-VLA training (Phase 4)"""
     data_root: str = field(
+        default=None,
         metadata={"help": "Root directory of LIBERO Goal dataset"}
     )
     action_chunk_size: int = field(
