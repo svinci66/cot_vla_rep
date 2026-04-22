@@ -965,554 +965,154 @@ class VILAUMetaForCausalLM(ABC):
         # 返回单个样本的动作
         return actions.squeeze(0)  # [chunk_size, action_dim]
 
-    # ===== Phase 4: Visual CoT Methods =====
+    # ===== Phase 4: Visual CoT Methods (论文方案) =====
     @torch.inference_mode()
-    def generate_subgoal_image(
+    # ===== Phase 4: Visual CoT Methods (严格按照论文方案) =====
+    @torch.inference_mode()
+    def generate_with_visual_cot(
         self,
         observation: torch.Tensor,
         instruction: str,
-        cfg: float = 3.0,
+        subgoal_horizon: int = 8,
     ) -> torch.Tensor:
         """
-        生成子目标图像（Visual Chain-of-Thought的第一步）
+        CoT-VLA 闭环推理：先生成子目标图像tokens，再预测动作。
+
+        论文方案：
+        1. 编码观测图像和文本指令
+        2. 自回归生成子目标图像tokens（因果注意力）
+        3. 拼接<act> token
+        4. 使用全注意力解码动作
 
         Args:
-            observation: 当前观测图像 [3, H, W] 或 [1, 3, H, W]
-            instruction: 任务指令
-            cfg: Classifier-free guidance scale
-
+            observation: 当前观测图像 [1, 3, H, W] 或 [3, H, W]
+            instruction: 自然语言任务指令
+            subgoal_horizon: 预测未来第几帧作为子目标（未使用，保留接口）
         Returns:
-            subgoal_image: 生成的子目标图像 [3, H, W]
+            actions: [ACTION_CHUNK_SIZE, ACTION_DIM] 预测的动作序列
         """
-        from vila_u.constants import DEFAULT_SUBGOAL_START_TOKEN, DEFAULT_SUBGOAL_END_TOKEN
+        from vila_u.constants import DEFAULT_IMAGE_TOKEN, DEFAULT_ACT_START_TOKEN
 
         # 确保observation是4D tensor
         if observation.dim() == 3:
             observation = observation.unsqueeze(0)  # [1, 3, H, W]
 
-        # 构建prompt: 观测图像 + 指令 + 子目标生成请求
-        prompt = f"{instruction}\nGenerate the subgoal image for this task."
-
-        # 使用VILA-U的图像生成能力生成子目标
-        # 复用generate_image_content的逻辑
-        conversation = [{"from": "human", "value": prompt}]
-        input_ids = tokenize_conversation(
-            conversation,
-            self.tokenizer,
-            add_generation_prompt=True,
-            image_generation=True
-        ).to(observation.device)
-
-        # 准备CFG的输入
-        cfg_conversation = [{"from": "human", "value": " "}]
-        cfg_input_ids = tokenize_conversation(
-            cfg_conversation,
-            self.tokenizer,
-            add_generation_prompt=True,
-            image_generation=True
-        ).to(observation.device)
-
-        # 合并输入
-        input_ids_list = [input_ids, cfg_input_ids]
-        max_length = max([len(ids) for ids in input_ids_list])
-        batched_input_ids = torch.zeros((2, max_length), dtype=input_ids.dtype, device=observation.device)
-        attention_mask = torch.zeros((2, max_length), dtype=torch.bool, device=observation.device)
-
-        for i, ids in enumerate(input_ids_list):
-            batched_input_ids[i, -len(ids):] = ids
-            attention_mask[i, -len(ids):] = True
-
-        # 生成子目标图像tokens
-        image_ids = self.generate(
-            input_ids=batched_input_ids,
-            attention_mask=attention_mask,
-            cfg=cfg,
-            max_new_tokens=self.vision_tower.image_tokens,
-            use_cache=True
-        )
-
-        # 解码为图像
-        image_embeds = self.vision_tower.vision_tower.rqtransformer.embed_with_model_aux(
-            image_ids,
-            self.vision_tower.vision_tower.rqvaesiglip
-        )
-        image_embeds = torch.cumsum(image_embeds, dim=-2)[:, :, -1, :]
-        image_embeds = image_embeds.reshape(
-            2,
-            int(self.vision_tower.image_tokens**0.5),
-            int(self.vision_tower.image_tokens**0.5),
-            -1
-        )
-        response = self.vision_tower.vision_tower.rqvaesiglip.decode(image_embeds)
-        response = response.to(torch.float32).add_(1).mul_(127.5).clamp_(0, 255)
-
-        # 只返回非CFG的结果
-        subgoal_image = response[0]  # [3, H, W]
-
-        return subgoal_image
-
-    @torch.inference_mode()
-    def predict_action_with_visual_cot(
-        self,
-        observation: torch.Tensor,
-        instruction: str,
-        subgoal_image: Optional[torch.Tensor] = None,
-        cfg: float = 3.0,
-    ) -> torch.Tensor:
-        """
-        使用Visual CoT进行动作预测：observation -> subgoal -> action
-
-        Args:
-            observation: 当前观测图像 [3, H, W] 或 [1, 3, H, W]
-            instruction: 任务指令
-            subgoal_image: 子目标图像（可选，如果为None则自动生成）
-            cfg: Classifier-free guidance scale for subgoal generation
-
-        Returns:
-            actions: [ACTION_CHUNK_SIZE, ACTION_DIM] 预测的动作序列
-        """
-        if not getattr(self.config, "use_visual_cot", False):
-            # 如果没有启用visual CoT，回退到普通预测
-            return self.predict_action(observation, instruction)
-
-        # Step 1: 生成子目标图像（如果未提供）
-        if subgoal_image is None:
-            subgoal_image = self.generate_subgoal_image(observation, instruction, cfg=cfg)
-
-        # Step 2: 使用子目标图像进行动作预测
-        # 这里我们将子目标图像作为额外的视觉输入
-        # 在实际实现中，可能需要将observation和subgoal拼接或以其他方式融合
-
-        # 对于离散动作预测模式
-        if getattr(self.config, "use_discrete_action_prediction", False):
-            return self._predict_action_discrete_with_subgoal(
-                observation, instruction, subgoal_image
-            )
-
-        # 对于连续动作预测模式
-        return self._predict_action_continuous_with_subgoal(
-            observation, instruction, subgoal_image
-        )
-
-    def _predict_action_continuous_with_subgoal(
-        self,
-        observation: torch.Tensor,
-        instruction: str,
-        subgoal_image: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        使用子目标图像进行连续动作预测（回归模式）
-
-        Args:
-            observation: [3, H, W] 或 [1, 3, H, W]
-            instruction: 任务指令
-            subgoal_image: [3, H, W] 子目标图像
-
-        Returns:
-            actions: [ACTION_CHUNK_SIZE, ACTION_DIM]
-        """
-        from vila_u.constants import DEFAULT_IMAGE_TOKEN
-
-        # 确保是4D tensor
-        if observation.dim() == 3:
-            observation = observation.unsqueeze(0)
-        if subgoal_image.dim() == 3:
-            subgoal_image = subgoal_image.unsqueeze(0)
-
         device = next(self.parameters()).device
         observation = observation.to(device, dtype=self.dtype)
-        subgoal_image = subgoal_image.to(device, dtype=self.dtype)
 
-        # 构建包含两个图像的prompt
-        # 第一个图像是观测，第二个是子目标
+        # Step 1: 编码观测图像和文本指令
         image_token = DEFAULT_IMAGE_TOKEN
         if getattr(self.config, "mm_use_im_start_end", False):
             image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
 
-        prompt = f"{image_token}\nCurrent observation.\n{image_token}\nSubgoal image.\n{instruction}"
-
+        prompt = f"{image_token}\n{instruction}"
         conversation = [{"from": "human", "value": prompt}]
         input_ids = tokenize_conversation(
             conversation,
             self.tokenizer,
             add_generation_prompt=True,
         ).unsqueeze(0).to(device)
-        attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
 
-        # 将两个图像拼接
-        images = torch.cat([observation, subgoal_image], dim=0)  # [2, 3, H, W]
+        # Step 2: 自回归生成子目标图像tokens（因果注意力）
+        # 每张256×256图像编码为16×16×4 tokens（残差深度4）
+        subgoal_token_len = 16 * 16 * 4  # 1024 tokens
 
-        # 前向传播
-        outputs = self(
+        subgoal_ids = self.generate(
             input_ids=input_ids,
-            attention_mask=attention_mask,
-            images=images,
-            output_hidden_states=True,
-            return_dict=True,
+            images=observation,
+            max_new_tokens=subgoal_token_len,
+            do_sample=False,
+            use_cache=True,
         )
 
-        # 获取隐层状态并预测动作
-        hidden_states = outputs.hidden_states[-1]
-        actions = self.predict_actions(hidden_states, attention_mask=attention_mask)
+        # Step 3: 拼接子目标序列，在末尾添加<act> token
+        act_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_ACT_START_TOKEN)
+        if act_token_id is None:
+            raise RuntimeError(f"Token '{DEFAULT_ACT_START_TOKEN}' not found in tokenizer. Please register it first.")
 
-        return actions.squeeze(0)
+        act_token = torch.tensor([[act_token_id]], device=device, dtype=subgoal_ids.dtype)
+        full_seq = torch.cat([subgoal_ids, act_token], dim=1)
+        action_position = full_seq.shape[1] - 1  # <act> token的位置
 
-    def _predict_action_discrete_with_subgoal(
-        self,
-        observation: torch.Tensor,
-        instruction: str,
-        subgoal_image: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        使用子目标图像进行离散动作预测（token生成模式）
+        # Step 4: 使用全注意力解码动作
+        # 注意：这里需要使用混合注意力mask，让<act> token能attend到所有之前的tokens
+        # 但由于我们已经有了完整序列，可以直接前向传播
 
-        Args:
-            observation: [3, H, W] 或 [1, 3, H, W]
-            instruction: 任务指令
-            subgoal_image: [3, H, W] 子目标图像
-
-        Returns:
-            actions: [ACTION_CHUNK_SIZE, ACTION_DIM]
-        """
-        from vila_u.constants import DEFAULT_IMAGE_TOKEN
-
-        # 确保是4D tensor
-        if observation.dim() == 3:
-            observation = observation.unsqueeze(0)
-        if subgoal_image.dim() == 3:
-            subgoal_image = subgoal_image.unsqueeze(0)
-
-        device = next(self.parameters()).device
-        observation = observation.to(device, dtype=self.dtype)
-        subgoal_image = subgoal_image.to(device, dtype=self.dtype)
-
-        # 构建prompt
-        image_token = DEFAULT_IMAGE_TOKEN
-        if getattr(self.config, "mm_use_im_start_end", False):
-            image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
-
-        prompt = f"{image_token}\nCurrent observation.\n{image_token}\nSubgoal image.\n{instruction}"
-
-        conversation = [{"from": "human", "value": prompt}]
-        input_ids = tokenize_conversation(
-            conversation,
-            self.tokenizer,
-            add_generation_prompt=True,
-        ).unsqueeze(0).to(device)
-        attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
-
-        # 拼接图像
-        images = torch.cat([observation, subgoal_image], dim=0)  # [2, 3, H, W]
-
-        # 获取action token配置
-        action_token_ids = getattr(self.config, "action_token_ids", None)
-        if action_token_ids is None:
-            raise RuntimeError("Discrete action prediction requires config.action_token_ids")
-
-        num_action_tokens = self.config.action_chunk_size * self.config.action_dim
-
-        # 使用混合注意力或自回归生成
+        # 如果使用Phase 3的混合注意力
         if getattr(self.config, "use_hybrid_attention", False):
-            # 混合注意力模式
-            action_slot_token_id = getattr(self.config, "action_slot_token_id", None)
-            if action_slot_token_id is None:
-                raise RuntimeError("Hybrid attention requires config.action_slot_token_id")
+            # 构建混合注意力mask：<act> token位置使用全注意力
+            attention_mask = torch.ones_like(full_seq, dtype=torch.bool)
 
-            action_slots = torch.full(
-                (1, num_action_tokens),
-                fill_value=action_slot_token_id,
-                dtype=input_ids.dtype,
-                device=device,
-            )
-            full_input_ids = torch.cat([input_ids, action_slots], dim=1)
-            full_attention_mask = full_input_ids.ne(self.tokenizer.pad_token_id)
-
-            (
-                _,
-                position_ids,
-                mm_attention_mask,
-                past_key_values,
-                inputs_embeds,
-                _,
-            ) = self.prepare_inputs_labels_for_multimodal(
-                input_ids=full_input_ids,
-                position_ids=None,
-                attention_mask=full_attention_mask,
-                past_key_values=None,
-                labels=None,
-                images=images,
-            )
-
-            hybrid_attention_mask = build_hybrid_attention_mask(
-                mm_attention_mask,
-                num_action_tokens=num_action_tokens,
-                dtype=inputs_embeds.dtype,
-            )
-
-            use_flash_hybrid = (
-                getattr(self.llm.config, "_attn_implementation", None)
-                == "flash_attention_2"
-            )
-
+            # 使用Phase 3的混合注意力逻辑
+            # 这里简化处理：直接前向传播，让模型自己处理注意力
             outputs = self.llm.model(
-                input_ids=None,
-                attention_mask=mm_attention_mask if use_flash_hybrid else hybrid_attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                inputs_embeds=inputs_embeds,
-                use_cache=False,
-                output_attentions=False,
-                output_hidden_states=False,
-                return_dict=True,
-                seqlens_in_batch=mm_attention_mask.sum(dim=-1, dtype=torch.int32) if use_flash_hybrid else None,
-                num_action_tokens=num_action_tokens if use_flash_hybrid else None,
-            )
-
-            action_hidden_states = outputs.last_hidden_state[:, -num_action_tokens:, :]
-            action_logits = compute_selected_token_logits(
-                action_hidden_states,
-                self.llm.lm_head,
-                action_token_ids,
-            )
-            predicted_bins = torch.argmax(action_logits, dim=-1)
-            generated_action_ids = bins_to_token_ids(predicted_bins, action_token_ids)
-        else:
-            # 自回归生成模式
-            output_ids = self.generate(
-                input_ids=input_ids,
-                images=images,
+                input_ids=full_seq,
                 attention_mask=attention_mask,
-                do_sample=False,
-                max_new_tokens=num_action_tokens,
-                use_cache=True,
-                logits_processor=[AllowedActionTokensLogitsProcessor(action_token_ids)],
+                output_hidden_states=True,
+                return_dict=True,
             )
-            generated_action_ids = output_ids[:, -num_action_tokens:]
-
-        actions = token_ids_to_actions(generated_action_ids, action_token_ids)
-        return actions.view(self.config.action_chunk_size, self.config.action_dim)
-
-    def compute_cot_vla_loss(
-        self,
-        observation_images: torch.Tensor,
-        subgoal_images: torch.Tensor,
-        instructions: list,
-        action_labels: torch.Tensor,
-        action_token_ids: Optional[torch.Tensor] = None,
-    ) -> dict:
-        """
-        计算CoT-VLA的联合损失：视觉生成损失 + 动作预测损失
-
-        Args:
-            observation_images: [B, 3, H, W] 观测图像
-            subgoal_images: [B, 3, H, W] 子目标图像（ground truth）
-            instructions: List[str] 任务指令
-            action_labels: [B, chunk_size, action_dim] 动作标签
-            action_token_ids: [B, chunk_size * action_dim] 离散动作tokens（可选）
-
-        Returns:
-            dict with keys: 'total_loss', 'visual_loss', 'action_loss'
-        """
-        import torch.nn.functional as F
-        from vila_u.constants import IGNORE_INDEX
-
-        batch_size = observation_images.shape[0]
-        device = observation_images.device
-
-        # ===== Part 1: 视觉生成损失 =====
-        # 使用VILA-U的图像生成能力，计算生成子目标图像的损失
-        # 这部分需要将子目标图像编码为tokens，然后计算交叉熵损失
-
-        # 编码子目标图像为tokens
-        vision_tower = self.get_vision_tower()
-        with torch.no_grad():
-            # 使用vision tower编码子目标图像
-            subgoal_tokens = vision_tower.vision_tower.rqvaesiglip.encode(subgoal_images)
-            # subgoal_tokens: [B, num_tokens] 离散token IDs
-
-        # 构建视觉生成的输入序列
-        # 格式: <image> instruction <subgoal_start> [subgoal_tokens] <subgoal_end>
-        from vila_u.constants import DEFAULT_IMAGE_TOKEN, DEFAULT_SUBGOAL_START_TOKEN
-
-        visual_prompts = []
-        for instruction in instructions:
-            image_token = DEFAULT_IMAGE_TOKEN
-            if getattr(self.config, "mm_use_im_start_end", False):
-                image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
-            prompt = f"{image_token}\n{instruction}\nGenerate subgoal:"
-            visual_prompts.append(prompt)
-
-        # Tokenize prompts
-        visual_conversations = [{"from": "human", "value": p} for p in visual_prompts]
-        visual_input_ids_list = []
-        for conv in visual_conversations:
-            ids = tokenize_conversation(
-                [conv],
-                self.tokenizer,
-                add_generation_prompt=True,
-            )
-            visual_input_ids_list.append(ids)
-
-        # Pad to same length
-        max_len = max(len(ids) for ids in visual_input_ids_list)
-        visual_input_ids = torch.full(
-            (batch_size, max_len),
-            self.tokenizer.pad_token_id,
-            dtype=torch.long,
-            device=device
-        )
-        for i, ids in enumerate(visual_input_ids_list):
-            visual_input_ids[i, -len(ids):] = ids.to(device)
-
-        visual_attention_mask = visual_input_ids.ne(self.tokenizer.pad_token_id)
-
-        # 前向传播生成子目标
-        # 注意：这里简化处理，实际可能需要更复杂的实现
-        visual_outputs = self(
-            input_ids=visual_input_ids,
-            attention_mask=visual_attention_mask,
-            images=observation_images,
-            output_hidden_states=True,
-            return_dict=True,
-        )
-
-        # 计算视觉生成损失（简化版本）
-        # 实际应该是对生成的image tokens计算损失
-        visual_loss = torch.tensor(0.0, device=device)  # Placeholder
-
-        # ===== Part 2: 动作预测损失 =====
-        # 使用观测图像和子目标图像预测动作
-
-        # 构建包含两个图像的输入
-        from vila_u.constants import DEFAULT_IMAGE_TOKEN
-
-        action_prompts = []
-        for instruction in instructions:
-            image_token = DEFAULT_IMAGE_TOKEN
-            if getattr(self.config, "mm_use_im_start_end", False):
-                image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
-            prompt = f"{image_token}\nObservation.\n{image_token}\nSubgoal.\n{instruction}"
-            action_prompts.append(prompt)
-
-        action_conversations = [{"from": "human", "value": p} for p in action_prompts]
-        action_input_ids_list = []
-        for conv in action_conversations:
-            ids = tokenize_conversation(
-                [conv],
-                self.tokenizer,
-                add_generation_prompt=True,
-            )
-            action_input_ids_list.append(ids)
-
-        max_len = max(len(ids) for ids in action_input_ids_list)
-        action_input_ids = torch.full(
-            (batch_size, max_len),
-            self.tokenizer.pad_token_id,
-            dtype=torch.long,
-            device=device
-        )
-        for i, ids in enumerate(action_input_ids_list):
-            action_input_ids[i, -len(ids):] = ids.to(device)
-
-        action_attention_mask = action_input_ids.ne(self.tokenizer.pad_token_id)
-
-        # 拼接观测和子目标图像
-        combined_images = torch.cat([observation_images, subgoal_images], dim=0)  # [2B, 3, H, W]
-
-        # 离散动作预测模式
-        if getattr(self.config, "use_discrete_action_prediction", False):
-            # 添加action slots
-            num_action_tokens = self.config.action_chunk_size * self.config.action_dim
-            action_slot_token_id = getattr(self.config, "action_slot_token_id", None)
-
-            if action_slot_token_id is not None and getattr(self.config, "use_hybrid_attention", False):
-                action_slots = torch.full(
-                    (batch_size, num_action_tokens),
-                    fill_value=action_slot_token_id,
-                    dtype=action_input_ids.dtype,
-                    device=device,
-                )
-                full_input_ids = torch.cat([action_input_ids, action_slots], dim=1)
-                full_attention_mask = full_input_ids.ne(self.tokenizer.pad_token_id)
-
-                # Prepare multimodal inputs
-                (
-                    _,
-                    position_ids,
-                    mm_attention_mask,
-                    past_key_values,
-                    inputs_embeds,
-                    _,
-                ) = self.prepare_inputs_labels_for_multimodal(
-                    input_ids=full_input_ids,
-                    position_ids=None,
-                    attention_mask=full_attention_mask,
-                    past_key_values=None,
-                    labels=None,
-                    images=combined_images,
-                )
-
-                # Build hybrid attention mask
-                hybrid_attention_mask = build_hybrid_attention_mask(
-                    mm_attention_mask,
-                    num_action_tokens=num_action_tokens,
-                    dtype=inputs_embeds.dtype,
-                )
-
-                use_flash_hybrid = (
-                    getattr(self.llm.config, "_attn_implementation", None)
-                    == "flash_attention_2"
-                )
-
-                outputs = self.llm.model(
-                    input_ids=None,
-                    attention_mask=mm_attention_mask if use_flash_hybrid else hybrid_attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    inputs_embeds=inputs_embeds,
-                    use_cache=False,
-                    output_attentions=False,
-                    output_hidden_states=False,
-                    return_dict=True,
-                    seqlens_in_batch=mm_attention_mask.sum(dim=-1, dtype=torch.int32) if use_flash_hybrid else None,
-                    num_action_tokens=num_action_tokens if use_flash_hybrid else None,
-                )
-
-                action_hidden_states = outputs.last_hidden_state[:, -num_action_tokens:, :]
-                action_logits = compute_selected_token_logits(
-                    action_hidden_states,
-                    self.llm.lm_head,
-                    self.config.action_token_ids,
-                )
-
-                # 计算交叉熵损失
-                action_logits_flat = action_logits.view(-1, action_logits.size(-1))
-                action_token_ids_flat = action_token_ids.view(-1)
-                action_loss = F.cross_entropy(action_logits_flat, action_token_ids_flat)
-            else:
-                # 自回归模式的损失计算
-                action_loss = torch.tensor(0.0, device=device)  # Placeholder
         else:
-            # 连续动作回归模式
-            action_outputs = self(
-                input_ids=action_input_ids,
-                attention_mask=action_attention_mask,
-                images=combined_images,
+            # 标准因果注意力
+            outputs = self.llm.model(
+                input_ids=full_seq,
                 output_hidden_states=True,
                 return_dict=True,
             )
 
-            hidden_states = action_outputs.hidden_states[-1]
-            action_pred = self.predict_actions(hidden_states, attention_mask=action_attention_mask)
+        hidden_states = outputs.hidden_states[-1]  # 取最后一层 [1, seq_len, hidden_size]
 
-            # L1 损失
-            action_loss = F.l1_loss(action_pred, action_labels)
+        # Step 5: 动作头解码
+        if not hasattr(self, 'action_head'):
+            raise RuntimeError("Action head not initialized. Set use_visual_cot=True in config.")
 
-        # ===== 总损失 =====
-        total_loss = visual_loss + action_loss
+        # 提取<act> token的隐层状态
+        act_hidden = hidden_states[:, action_position, :]  # [1, hidden_size]
+        act_hidden = act_hidden.to(self.action_head.weight.dtype)
 
-        return {
-            'total_loss': total_loss,
-            'visual_loss': visual_loss,
-            'action_loss': action_loss,
-        }
+        # 通过动作头解码
+        raw = self.action_head(act_hidden)  # [1, chunk_size * action_dim]
+        actions = raw.view(self.config.action_chunk_size, self.config.action_dim)
+
+        # Tanh激活，限制到[-1, 1]
+        actions = torch.tanh(actions)
+
+        return actions  # [ACTION_CHUNK_SIZE, ACTION_DIM]
+
+    def compute_cot_vla_loss(
+        self,
+        lm_logits: torch.Tensor,
+        action_pred: torch.Tensor,
+        visual_labels: torch.Tensor,
+        action_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        总损失 = 视觉自回归损失 + 动作回归损失
+
+        论文方案：
+        - 视觉损失：子目标图像tokens的交叉熵损失
+        - 动作损失：动作值的L1损失
+
+        Args:
+            lm_logits: [B, seq_len, vocab_size] LLM输出logits
+            action_pred: [B, chunk_size, action_dim] 动作预测值
+            visual_labels: [B, seq_len] 图像/文本token标签（IGNORE_INDEX处不计算）
+            action_labels: [B, chunk_size, action_dim] 真实动作（归一化到[-1, 1]）
+        Returns:
+            total_loss: 总损失
+        """
+        import torch.nn.functional as F
+        from vila_u.constants import IGNORE_INDEX
+
+        # 视觉/文本自回归损失（原VILA-U损失不变）
+        shift_logits = lm_logits[..., :-1, :].contiguous()
+        shift_labels = visual_labels[..., 1:].contiguous()
+        loss_visual = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=IGNORE_INDEX,
+        )
+
+        # 动作回归损失（L1，对异常值更鲁棒）
+        loss_action = F.l1_loss(action_pred, action_labels)
+
+        return loss_visual + loss_action

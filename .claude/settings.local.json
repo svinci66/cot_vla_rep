@@ -8,7 +8,13 @@
       "Bash(brew list:*)",
       "Bash(pip3 install:*)",
       "Bash(python3 -c \"from pdfminer.high_level import extract_text; text = extract_text\\(''''/Users/sauvinci/Zotero/storage/RU4ZNVBZ/Zhao 等 - 2025 - CoT-VLA Visual Chain-of-Thought Reasoning for Vision-Language-Action Models.pdf''''\\); print\\(text[:8000]\\)\")",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(python:*)",
+      "Bash(git checkout:*)",
+      "Bash(chmod:*)"
     ]
   }
 }
