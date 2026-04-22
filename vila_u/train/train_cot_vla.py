@@ -162,6 +162,7 @@ class CoTVLADataCollator:
         action_chunk_size: int,
         action_dim: int,
         use_hybrid_attention: bool,
+        vision_tower=None,
     ):
         self.tokenizer = tokenizer
         self.model_max_length = model_max_length
@@ -170,41 +171,80 @@ class CoTVLADataCollator:
         self.action_slot_token_id = action_slot_token_id
         self.num_action_tokens = action_chunk_size * action_dim
         self.use_hybrid_attention = use_hybrid_attention
+        self.vision_tower = vision_tower
 
     def __call__(self, batch):
         # Stack observation images
         images = torch.stack([item["observations"] for item in batch])
 
-        # Stack subgoal images (for visual CoT training)
-        subgoal_images = torch.stack([item["subgoal_images"] for item in batch])
+        # Encode subgoal images to token IDs using vision tower
+        if "subgoal_images" in batch[0]:
+            subgoal_images = torch.stack([item["subgoal_images"] for item in batch])
+
+            # Encode subgoal images to codebook indices (token IDs)
+            with torch.no_grad():
+                # Move to same device as vision tower
+                device = next(self.vision_tower.parameters()).device
+                subgoal_images = subgoal_images.to(device)
+
+                # Encode: returns (code, z_q) where code is [B, H, W, depth]
+                code, _ = self.vision_tower.vision_tower.rqvaesiglip.encode_image(subgoal_images)
+
+                # Flatten code to token sequence: [B, H, W, depth] -> [B, H*W*depth]
+                B, H, W, depth = code.shape
+                subgoal_token_ids = code.reshape(B, H * W * depth).cpu()  # [B, 1024]
+        else:
+            subgoal_token_ids = None
 
         input_id_list = []
         label_list = []
-        for item in batch:
+        for i, item in enumerate(batch):
             prompt_ids = item["prompt_ids"]
-            subgoal_token_ids = item["subgoal_token_ids"]  # 1024 tokens for subgoal image
             action_token_ids = item["action_token_ids"]
 
-            # Construct input sequence: [prompt] [subgoal_tokens] [action_tokens]
-            if self.use_hybrid_attention:
-                action_input_ids = torch.full_like(
-                    action_token_ids,
-                    fill_value=self.action_slot_token_id,
+            # Construct input sequence
+            if subgoal_token_ids is not None:
+                # Phase 4: [prompt] [subgoal_tokens] [action_tokens]
+                subgoal_ids = subgoal_token_ids[i]
+
+                if self.use_hybrid_attention:
+                    action_input_ids = torch.full_like(
+                        action_token_ids,
+                        fill_value=self.action_slot_token_id,
+                    )
+                else:
+                    action_input_ids = action_token_ids
+
+                input_ids = torch.cat([prompt_ids, subgoal_ids, action_input_ids], dim=0)
+
+                # Labels: ignore prompt, predict subgoal tokens and action tokens
+                labels = torch.cat(
+                    [
+                        torch.full_like(prompt_ids, IGNORE_INDEX),
+                        subgoal_ids,  # Visual autoregressive loss
+                        action_token_ids,   # Action prediction loss
+                    ],
+                    dim=0,
                 )
             else:
-                action_input_ids = action_token_ids
+                # Phase 2/3: [prompt] [action_tokens]
+                if self.use_hybrid_attention:
+                    action_input_ids = torch.full_like(
+                        action_token_ids,
+                        fill_value=self.action_slot_token_id,
+                    )
+                else:
+                    action_input_ids = action_token_ids
 
-            input_ids = torch.cat([prompt_ids, subgoal_token_ids, action_input_ids], dim=0)
+                input_ids = torch.cat([prompt_ids, action_input_ids], dim=0)
+                labels = torch.cat(
+                    [
+                        torch.full_like(prompt_ids, IGNORE_INDEX),
+                        action_token_ids,
+                    ],
+                    dim=0,
+                )
 
-            # Labels: ignore prompt, predict subgoal tokens and action tokens
-            labels = torch.cat(
-                [
-                    torch.full_like(prompt_ids, IGNORE_INDEX),
-                    subgoal_token_ids,  # Visual autoregressive loss
-                    action_token_ids,   # Action prediction loss
-                ],
-                dim=0,
-            )
             input_id_list.append(input_ids[: self.model_max_length])
             label_list.append(labels[: self.model_max_length])
 
@@ -224,7 +264,6 @@ class CoTVLADataCollator:
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "images": images,
-            "subgoal_images": subgoal_images,
             "labels": labels,
         }
 
@@ -343,6 +382,7 @@ def make_cot_vla_data_module(
     mm_use_im_start_end: bool,
     action_token_ids,
     action_slot_token_id: int | None,
+    vision_tower=None,
 ) -> Dict:
     """Create data module for CoT-VLA training"""
     from vila_u.data.libero_dataset_v2 import LiberoGoalDataset
@@ -377,6 +417,7 @@ def make_cot_vla_data_module(
             action_chunk_size=data_args.action_chunk_size,
             action_dim=data_args.action_dim,
             use_hybrid_attention=data_args.use_hybrid_attention,
+            vision_tower=vision_tower,
         ),
     )
 
@@ -516,6 +557,7 @@ def train():
         mm_use_im_start_end=getattr(config, "mm_use_im_start_end", False),
         action_token_ids=action_token_ids,
         action_slot_token_id=action_slot_token_id,
+        vision_tower=vision_tower,
     )
 
     # Store action token IDs in trainer for loss computation
