@@ -443,10 +443,19 @@ def train():
     prepare_config_for_training(config, model_args, training_args, data_args)
 
     mprint(f"Loading model from {model_args.model_name_or_path}")
+
+    # Determine attention implementation
+    attn_implementation = os.environ.get("ATTN_IMPLEMENTATION", "flash_attention_2")
+    if cot_args.use_hybrid_attention and attn_implementation == "flash_attention_2":
+        attn_implementation = "eager"
+    low_cpu_mem_usage = env_flag("LOW_CPU_MEM_USAGE", True)
+
     model = model_cls(
         config=config,
-        low_cpu_mem_usage=True,
-        attn_implementation=training_args.attn_implementation,
+        attn_implementation=attn_implementation,
+        model_max_length=training_args.model_max_length,
+        cache_dir=training_args.cache_dir,
+        low_cpu_mem_usage=low_cpu_mem_usage,
     )
 
     tokenizer = model.tokenizer
