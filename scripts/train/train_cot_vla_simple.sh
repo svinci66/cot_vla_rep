@@ -11,8 +11,8 @@
 set -e
 
 # ===== Required Configuration (EDIT THESE) =====
-MODEL_PATH=${MODEL_PATH:-"/path/to/vila-u-7b-256"}
-DATA_ROOT=${DATA_ROOT:-"/path/to/libero_goal"}
+MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
+DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
 OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/phase4_visual_cot"}
 
 # ===== Optional Configuration =====
