@@ -8,6 +8,10 @@ from vila_u.constants import (
     DEFAULT_IM_END_TOKEN,
     DEFAULT_VI_START_TOKEN,
     DEFAULT_VI_END_TOKEN,
+    DEFAULT_ACT_START_TOKEN,
+    DEFAULT_ACT_END_TOKEN,
+    DEFAULT_SUBGOAL_START_TOKEN,
+    DEFAULT_SUBGOAL_END_TOKEN,
 )
 
 
@@ -47,6 +51,16 @@ def load_pretrained_model(
         tokenizer.add_tokens(
             [DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN], special_tokens=True
         )
+
+    # Phase 4: Register visual CoT special tokens
+    use_visual_cot = getattr(model.config, "use_visual_cot", False)
+    if use_visual_cot:
+        tokenizer.add_tokens(
+            [DEFAULT_ACT_START_TOKEN, DEFAULT_ACT_END_TOKEN,
+             DEFAULT_SUBGOAL_START_TOKEN, DEFAULT_SUBGOAL_END_TOKEN],
+            special_tokens=True
+        )
+
     model.resize_token_embeddings(len(tokenizer))
     model.eval()
 
