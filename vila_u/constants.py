@@ -22,3 +22,13 @@ ACTION_HORIZON = 10         # 动作预测的时间跨度
 ACTION_NUM_BINS = 256       # Phase 2: 每个动作维度离散化 bin 数
 ACTION_MIN = -1.0           # 动作归一化最小值
 ACTION_MAX = 1.0            # 动作归一化最大值
+
+# ===== Phase 4: Visual CoT =====
+ACTION_TOKEN_INDEX = -201
+DEFAULT_ACT_START_TOKEN = "<act>"
+DEFAULT_ACT_END_TOKEN = "</act>"
+DEFAULT_SUBGOAL_START_TOKEN = "<subgoal>"
+DEFAULT_SUBGOAL_END_TOKEN = "</subgoal>"
+
+SUBGOAL_HORIZON_LOW = 4     # 子目标采样下界（帧数）
+SUBGOAL_HORIZON_HIGH = 16   # 子目标采样上界（帧数）

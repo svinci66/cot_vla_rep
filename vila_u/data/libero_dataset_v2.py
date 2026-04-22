@@ -44,6 +44,9 @@ class LiberoGoalDataset(Dataset):
         mm_use_im_start_end: bool = False,
         action_token_ids=None,
         use_discrete_action_prediction: bool = False,
+        use_visual_cot: bool = False,
+        subgoal_horizon_low: int = 4,
+        subgoal_horizon_high: int = 16,
     ):
         """
         Args:
@@ -54,6 +57,9 @@ class LiberoGoalDataset(Dataset):
             image_size: Target image size (will be 256x256)
             remove_pause_intervals: Whether to remove pause intervals
             pause_threshold: Threshold for detecting pause (L2 norm of action)
+            use_visual_cot: Whether to use visual chain-of-thought (Phase 4)
+            subgoal_horizon_low: Minimum frames ahead for subgoal sampling
+            subgoal_horizon_high: Maximum frames ahead for subgoal sampling
         """
         self.data_root = data_root
         self.image_processor = image_processor
@@ -65,6 +71,9 @@ class LiberoGoalDataset(Dataset):
         self.mm_use_im_start_end = mm_use_im_start_end
         self.action_token_ids = action_token_ids
         self.use_discrete_action_prediction = use_discrete_action_prediction
+        self.use_visual_cot = use_visual_cot
+        self.subgoal_horizon_low = subgoal_horizon_low
+        self.subgoal_horizon_high = subgoal_horizon_high
         self._prompt_cache = {}
         self._file_handles = {}
 
@@ -150,7 +159,8 @@ class LiberoGoalDataset(Dataset):
                         non_pause_indices = list(range(num_samples))
 
                     # Create samples for valid starting positions
-                    for filtered_t in range(num_samples - self.action_chunk_size):
+                    max_horizon = self.subgoal_horizon_high if self.use_visual_cot else 0
+                    for filtered_t in range(num_samples - self.action_chunk_size - max_horizon):
                         # Get original timestep indices
                         original_t = non_pause_indices[filtered_t]
                         if self.remove_pause_intervals:
@@ -260,6 +270,42 @@ class LiberoGoalDataset(Dataset):
             'prompt_ids': sample['prompt_ids'],
             'action_labels': torch.from_numpy(sample['action_labels']).float(),  # [chunk_size, 7]
         }
+
+        # Phase 4: Load subgoal image if using visual CoT
+        if self.use_visual_cot:
+            import random
+            # Sample subgoal horizon between low and high
+            subgoal_horizon = random.randint(self.subgoal_horizon_low, self.subgoal_horizon_high)
+
+            # Get subgoal timestep
+            filtered_t = sample['filtered_timestep']
+            non_pause_indices = sample['non_pause_indices']
+            subgoal_filtered_t = filtered_t + subgoal_horizon
+
+            if subgoal_filtered_t < len(non_pause_indices):
+                subgoal_t = non_pause_indices[subgoal_filtered_t]
+            else:
+                # If out of bounds, use the last available frame
+                subgoal_t = non_pause_indices[-1]
+
+            # Load subgoal image
+            subgoal_rgb = demo['obs/agentview_rgb'][subgoal_t]  # [H, W, 3]
+            subgoal_tensor = torch.from_numpy(subgoal_rgb).permute(2, 0, 1).float() / 255.0
+
+            # Resize
+            if subgoal_tensor.shape[1] != self.image_size or subgoal_tensor.shape[2] != self.image_size:
+                subgoal_tensor = torch.nn.functional.interpolate(
+                    subgoal_tensor.unsqueeze(0),
+                    size=(self.image_size, self.image_size),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(0)
+
+            # Normalize
+            subgoal_tensor = (subgoal_tensor - mean) / std
+            result['subgoal_images'] = subgoal_tensor  # [3, 256, 256]
+            result['subgoal_horizon'] = subgoal_horizon
+
         if self.use_discrete_action_prediction:
             result['action_token_ids'] = torch.from_numpy(sample['action_token_ids']).long()
         return result

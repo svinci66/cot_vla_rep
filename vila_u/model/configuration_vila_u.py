@@ -47,3 +47,8 @@ class VILAUConfig(PretrainedConfig):
         self.action_slot_token_id = kwargs.pop("action_slot_token_id", None)
         self.use_hybrid_attention = kwargs.pop("use_hybrid_attention", False)
         self.tune_depth_transformer = kwargs.pop("tune_depth_transformer", False)
+
+        # ===== Phase 4: Visual CoT =====
+        self.use_visual_cot = kwargs.pop("use_visual_cot", False)
+        self.subgoal_horizon_low = kwargs.pop("subgoal_horizon_low", 4)
+        self.subgoal_horizon_high = kwargs.pop("subgoal_horizon_high", 16)
