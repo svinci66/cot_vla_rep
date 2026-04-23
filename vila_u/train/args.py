@@ -53,4 +53,3 @@ class TrainingArguments(transformers.TrainingArguments):
             "help": "Time to terminate the task inadvance (minutes), saveing checkpoints needs time."
         },
     )
-    dispatch_batches: Optional[bool] = field(default=None)

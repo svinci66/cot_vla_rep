@@ -14,7 +14,10 @@
       "Bash(git push:*)",
       "Bash(python:*)",
       "Bash(git checkout:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(git remote:*)",
+      "Bash(git restore:*)",
+      "Bash(find /Users/sauvinci/repo/vila-u-main -name \"*.py\" -exec grep -l \"rqvaesiglip\\\\|RQVAE\" {})"
     ]
   }
 }

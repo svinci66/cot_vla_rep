@@ -10,9 +10,6 @@
 
 set -e
 
-# Fix accelerate compatibility issue
-export ACCELERATE_USE_DISPATCH_BATCHES=0
-
 # ===== Required Configuration (EDIT THESE) =====
 MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
 DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
@@ -74,8 +71,7 @@ CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python -m vila_u.train.train_cot_vla 
     --model_max_length 512 \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \
-    --report_to none \
-    --dispatch_batches False
+    --report_to none
 
 echo "=========================================="
 echo "Training completed!"
