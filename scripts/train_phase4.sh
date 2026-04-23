@@ -7,6 +7,7 @@
 export WANDB_PROJECT="VILA-U-Visual-CoT"
 export CUDA_VISIBLE_DEVICES=0
 export ATTN_IMPLEMENTATION="eager"  # Phase 4 需要使用 eager attention
+export ACCELERATE_DISPATCH_BATCHES="0"  # 禁用 dispatch_batches 以兼容旧版本 accelerate
 
 # 模型和数据路径
 MODEL_PATH="/data/models/VILA-U-Llama3-8B"
@@ -59,4 +60,5 @@ python -m vila_u.train.train_visual_cot \
     --pause_threshold 0.01 \
     --visual_loss_weight $VISUAL_LOSS_WEIGHT \
     --action_loss_weight $ACTION_LOSS_WEIGHT \
+    --dispatch_batches False \
     --report_to "wandb"
