@@ -1,5 +1,6 @@
 import torch
 import torch.distributed as dist
+import inspect
 
 from torch import nn
 from torch.utils.data import ConcatDataset, Dataset, DistributedSampler, Sampler
@@ -226,11 +227,34 @@ class LengthGroupedSampler(Sampler):
 
 class VILAUTrainer(Trainer):
     def create_accelerator_and_postprocess(self):
-        """Override to remove dispatch_batches parameter for accelerate compatibility"""
-        # Remove dispatch_batches from args if it exists (not supported in accelerate 0.34.2)
-        if hasattr(self.args, 'dispatch_batches'):
-            delattr(self.args, 'dispatch_batches')
-        return super().create_accelerator_and_postprocess()
+        """Override to handle dispatch_batches parameter for accelerate 0.34.2 compatibility"""
+        from accelerate import Accelerator
+        import inspect
+
+        # Check if Accelerator supports dispatch_batches parameter
+        accelerator_params = inspect.signature(Accelerator.__init__).parameters
+
+        if "dispatch_batches" not in accelerator_params:
+            # Monkey patch: wrap Accelerator.__init__ to filter out dispatch_batches
+            original_init = Accelerator.__init__
+
+            def patched_init(self, *args, **kwargs):
+                # Remove dispatch_batches if present
+                kwargs.pop('dispatch_batches', None)
+                return original_init(self, *args, **kwargs)
+
+            Accelerator.__init__ = patched_init
+
+            try:
+                result = super().create_accelerator_and_postprocess()
+            finally:
+                # Restore original __init__
+                Accelerator.__init__ = original_init
+
+            return result
+        else:
+            # dispatch_batches is supported, proceed normally
+            return super().create_accelerator_and_postprocess()
 
     def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
         if self.train_dataset is None or not has_length(self.train_dataset):
