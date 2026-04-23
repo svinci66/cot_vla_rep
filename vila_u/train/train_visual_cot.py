@@ -230,12 +230,13 @@ class VisualCoTTrainer(VILAUTrainer):
         Phase 4 训练损失计算
 
         流程：
-        1. 模型自回归生成子目标 tokens（1024个）
-        2. 编码 GT 子目标图像为 tokens
-        3. 计算视觉损失（交叉熵）
-        4. 基于生成的子目标预测动作
-        5. 计算动作损失（交叉熵）
-        6. 返回联合损失
+        1. 提取输入序列（观测图像 + 文本指令）
+        2. 模型自回归生成子目标 tokens（1024个）
+        3. 编码 GT 子目标图像为 tokens
+        4. 计算视觉损失（生成的 tokens vs GT tokens）
+        5. 基于生成的子目标预测动作
+        6. 计算动作损失
+        7. 返回联合损失
         """
         # 提取输入
         input_ids = inputs["input_ids"]
@@ -243,44 +244,123 @@ class VisualCoTTrainer(VILAUTrainer):
         images = inputs["images"]
         subgoal_images = inputs["subgoal_images"]
         action_labels = inputs["action_labels"]
+        labels = inputs.get("labels")
 
         B = input_ids.shape[0]
+        device = input_ids.device
 
-        # 1. 自回归生成子目标 tokens
-        # TODO: 实现自回归生成逻辑
-        # 这里先用简单的前向传播代替
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            images=images,
-            labels=inputs.get("labels"),
-            return_dict=True,
-        )
+        # 找到输入序列的实际长度（不包括子目标和动作部分）
+        # 输入格式：[prompt] + [subgoal_placeholder(1024)] + [act(1)] + [actions(70)]
+        # 我们需要提取 prompt 部分
+        subgoal_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_SUBGOAL_TOKEN)
 
-        # 2. 编码 GT 子目标图像为 tokens（用于计算损失）
+        # 找到第一个 subgoal token 的位置
+        prompt_lengths = []
+        for i in range(B):
+            subgoal_positions = (input_ids[i] == subgoal_token_id).nonzero(as_tuple=True)[0]
+            if len(subgoal_positions) > 0:
+                prompt_lengths.append(subgoal_positions[0].item())
+            else:
+                # 如果没有找到，使用整个序列长度
+                prompt_lengths.append(attention_mask[i].sum().item())
+
+        # 1. 提取 prompt 部分（观测图像 + 文本指令）
+        max_prompt_len = max(prompt_lengths)
+        prompt_input_ids = input_ids[:, :max_prompt_len]
+        prompt_attention_mask = attention_mask[:, :max_prompt_len]
+
+        # 2. 自回归生成子目标 tokens
+        with torch.no_grad():
+            generated_subgoal_ids = model.generate_subgoal_tokens(
+                input_ids=prompt_input_ids,
+                images=images,
+                attention_mask=prompt_attention_mask,
+                max_new_tokens=SUBGOAL_NUM_TOKENS,
+                do_sample=False,
+            )  # [B, 1024]
+
+        # 3. 编码 GT 子目标图像为 tokens（用于计算损失）
         gt_subgoal_token_ids = model.encode_subgoal_image(subgoal_images)  # [B, 1024]
 
-        # 3. 计算视觉损失
-        # TODO: 从模型输出中提取子目标 logits
-        visual_loss = torch.tensor(0.0, device=input_ids.device)
+        # 4. 计算视觉损失（交叉熵）
+        # 需要获取生成过程中的 logits
+        # 这里使用一个简化的方法：通过前向传播获取 logits
 
-        # 4. 计算动作损失（使用现有的交叉熵损失）
-        action_loss = outputs.loss if outputs.loss is not None else torch.tensor(0.0, device=input_ids.device)
+        # 构建包含生成的子目标的输入序列
+        full_input_ids = torch.cat([prompt_input_ids, generated_subgoal_ids], dim=1)
+        full_attention_mask = torch.ones_like(full_input_ids)
 
-        # 5. 联合损失
+        # 前向传播获取 logits
+        outputs = model.llm.model(
+            input_ids=full_input_ids,
+            attention_mask=full_attention_mask,
+            return_dict=True,
+        )
+        hidden_states = outputs.last_hidden_state  # [B, seq_len, hidden_size]
+
+        # 提取子目标部分的 hidden states
+        subgoal_hidden = hidden_states[:, -SUBGOAL_NUM_TOKENS:, :]  # [B, 1024, hidden_size]
+
+        # 计算 logits
+        subgoal_logits = model.llm.lm_head(subgoal_hidden)  # [B, 1024, vocab_size]
+
+        # 计算交叉熵损失
+        visual_loss = torch.nn.functional.cross_entropy(
+            subgoal_logits.reshape(-1, subgoal_logits.size(-1)),
+            gt_subgoal_token_ids.reshape(-1),
+            ignore_index=-100,
+        )
+
+        # 5. 基于生成的子目标预测动作
+        # 构建完整序列：[prompt] + [generated_subgoal] + [act] + [action_placeholder]
+        act_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_ACT_TOKEN)
+        act_tokens = torch.full((B, 1), act_token_id, dtype=torch.long, device=device)
+
+        # 获取动作 token IDs
+        action_token_ids = model.config.action_token_ids
+        num_action_tokens = model.config.action_chunk_size * model.config.action_dim
+
+        # 将动作标签转换为 token IDs
+        gt_action_token_ids = actions_to_token_ids(action_labels, action_token_ids)
+        gt_action_token_ids = gt_action_token_ids.reshape(B, -1)  # [B, 70]
+
+        # 构建完整输入
+        action_input_ids = torch.cat([
+            prompt_input_ids,
+            generated_subgoal_ids,
+            act_tokens,
+            gt_action_token_ids,
+        ], dim=1)
+        action_attention_mask = torch.ones_like(action_input_ids)
+
+        # 构建标签（只计算动作部分的损失）
+        action_labels_seq = torch.full_like(action_input_ids, IGNORE_INDEX)
+        action_labels_seq[:, -num_action_tokens:] = gt_action_token_ids
+
+        # 前向传播计算动作损失
+        action_outputs = model.llm(
+            input_ids=action_input_ids,
+            attention_mask=action_attention_mask,
+            labels=action_labels_seq,
+            return_dict=True,
+        )
+        action_loss = action_outputs.loss
+
+        # 6. 联合损失
         visual_loss_weight = getattr(self.args, "visual_loss_weight", 1.0)
         action_loss_weight = getattr(self.args, "action_loss_weight", 1.0)
 
         total_loss = visual_loss_weight * visual_loss + action_loss_weight * action_loss
 
         # 记录损失
-        self.log({
-            "train/visual_loss": visual_loss.item(),
-            "train/action_loss": action_loss.item(),
-            "train/total_loss": total_loss.item(),
-        })
+        if self.state.global_step % 10 == 0:
+            self.log({
+                "train/visual_loss": visual_loss.item(),
+                "train/action_loss": action_loss.item(),
+                "train/total_loss": total_loss.item(),
+            })
 
-        return (total_loss, outputs) if return_outputs else total_loss
+        return (total_loss, action_outputs) if return_outputs else total_loss
 
 
 def make_visual_cot_data_module(

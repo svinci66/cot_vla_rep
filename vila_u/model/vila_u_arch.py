@@ -1041,3 +1041,155 @@ class VILAUMetaForCausalLM(ABC):
         subgoal_token_ids = code.reshape(B, -1)  # [B, 1024]
 
         return subgoal_token_ids
+
+    @torch.no_grad()
+    def generate_subgoal_tokens(
+        self,
+        input_ids: torch.Tensor,
+        images: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        max_new_tokens: int = 1024,
+        do_sample: bool = False,
+        temperature: float = 1.0,
+    ) -> torch.Tensor:
+        """
+        自回归生成子目标 tokens（Phase 4 核心方法）
+
+        Args:
+            input_ids: [B, seq_len] 输入序列（观测图像 + 文本指令）
+            images: [B, 3, 256, 256] 观测图像
+            attention_mask: [B, seq_len] 注意力掩码
+            max_new_tokens: 生成的 token 数量（默认 1024）
+            do_sample: 是否采样
+            temperature: 采样温度
+
+        Returns:
+            subgoal_token_ids: [B, max_new_tokens] 生成的子目标 token IDs
+        """
+        # 使用模型的 generate 方法自回归生成
+        output_ids = self.generate(
+            input_ids=input_ids,
+            images=images,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            use_cache=True,
+        )
+
+        # 提取生成的 tokens（去掉输入部分）
+        generated_tokens = output_ids[:, input_ids.shape[1]:]
+
+        return generated_tokens
+
+    def generate_with_visual_cot(
+        self,
+        observation: torch.Tensor,
+        instruction: str,
+        image_processor=None,
+        do_sample: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        使用 Visual CoT 生成动作（推理接口）
+
+        流程：
+        1. 编码观测图像和文本指令
+        2. 自回归生成子目标 tokens（1024个）
+        3. 基于子目标 tokens 预测动作
+
+        Args:
+            observation: [3, H, W] 或 PIL.Image 观测图像
+            instruction: 文本指令
+            image_processor: 图像预处理器
+            do_sample: 是否采样
+
+        Returns:
+            actions: [action_chunk_size, action_dim] 预测的动作
+            subgoal_image: [3, 256, 256] 生成的子目标图像（可视化）
+        """
+        if not getattr(self.config, "use_visual_cot", False):
+            raise RuntimeError("Model not configured for Visual CoT. Set use_visual_cot=True in config.")
+
+        self.eval()
+
+        # 1. 预处理图像
+        from PIL import Image
+        import numpy as np
+
+        if isinstance(observation, np.ndarray):
+            observation = Image.fromarray(observation.astype(np.uint8))
+        elif isinstance(observation, torch.Tensor):
+            if observation.dim() == 3:
+                if observation.shape[0] == 3:
+                    observation = observation.permute(1, 2, 0)
+                observation = observation.cpu().numpy()
+                if observation.max() <= 1.0:
+                    observation = (observation * 255).astype(np.uint8)
+                else:
+                    observation = observation.astype(np.uint8)
+            observation = Image.fromarray(observation)
+
+        if image_processor is None:
+            image_processor = self.vision_tower.image_processor
+
+        image_tensor = image_processor.preprocess(observation, return_tensors="pt")["pixel_values"]
+        image_tensor = image_tensor.to(self.device, dtype=self.dtype)
+
+        # 2. 构建输入序列
+        image_token = DEFAULT_IMAGE_TOKEN
+        if self.config.mm_use_im_start_end:
+            image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+
+        conversation = [{"from": "human", "value": f"{image_token}\n{instruction}"}]
+        input_ids = tokenize_conversation(conversation, self.tokenizer, add_generation_prompt=True)
+        input_ids = input_ids.unsqueeze(0).to(self.device)
+        attention_mask = torch.ones_like(input_ids)
+
+        # 3. 自回归生成子目标 tokens
+        subgoal_token_ids = self.generate_subgoal_tokens(
+            input_ids=input_ids,
+            images=image_tensor,
+            attention_mask=attention_mask,
+            max_new_tokens=SUBGOAL_NUM_TOKENS,
+            do_sample=do_sample,
+        )  # [1, 1024]
+
+        # 4. 解码子目标 tokens 为图像（用于可视化）
+        subgoal_image = self.decode_subgoal_tokens(subgoal_token_ids)  # [1, 3, 256, 256]
+
+        # 5. 基于生成的子目标预测动作
+        # 构建完整序列：[input_ids] + [subgoal_tokens] + [<act>]
+        act_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_ACT_TOKEN)
+        act_token = torch.tensor([[act_token_id]], device=self.device)
+
+        full_input_ids = torch.cat([input_ids, subgoal_token_ids, act_token], dim=1)
+        full_attention_mask = torch.ones_like(full_input_ids)
+
+        # 生成动作 tokens
+        if not getattr(self.config, "use_discrete_action_prediction", False):
+            raise RuntimeError("Visual CoT currently only supports discrete action prediction")
+
+        action_token_ids = self.config.action_token_ids
+        num_action_tokens = self.config.action_chunk_size * self.config.action_dim
+
+        from vila_u.utils.action_tokenizer import (
+            AllowedActionTokensLogitsProcessor,
+            token_ids_to_actions,
+        )
+
+        action_output_ids = self.generate(
+            input_ids=full_input_ids,
+            images=None,  # 图像已经编码在 input_ids 中
+            attention_mask=full_attention_mask,
+            do_sample=False,
+            max_new_tokens=num_action_tokens,
+            use_cache=True,
+            logits_processor=[AllowedActionTokensLogitsProcessor(action_token_ids)],
+        )
+
+        generated_action_ids = action_output_ids[:, -num_action_tokens:]
+        actions = token_ids_to_actions(generated_action_ids, action_token_ids)
+        actions = actions.view(self.config.action_chunk_size, self.config.action_dim)
+
+        return actions, subgoal_image.squeeze(0)
+
