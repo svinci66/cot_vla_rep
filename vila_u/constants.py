@@ -22,3 +22,11 @@ ACTION_HORIZON = 10         # 动作预测的时间跨度
 ACTION_NUM_BINS = 256       # Phase 2: 每个动作维度离散化 bin 数
 ACTION_MIN = -1.0           # 动作归一化最小值
 ACTION_MAX = 1.0            # 动作归一化最大值
+
+# ===== Phase 4: Visual CoT-VLA =====
+DEFAULT_SUBGOAL_TOKEN = "<subgoal>"
+DEFAULT_ACT_TOKEN = "<act>"
+SUBGOAL_TOKEN_INDEX = -300
+ACT_TOKEN_INDEX = -400
+SUBGOAL_IMAGE_SIZE = 256    # 子目标图像尺寸
+SUBGOAL_NUM_TOKENS = 1024   # 子目标图像编码后的 token 数 (16x16x4)

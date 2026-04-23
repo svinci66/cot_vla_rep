@@ -17,6 +17,8 @@ from vila_u.constants import (
     DEFAULT_IM_END_TOKEN,
     DEFAULT_VI_START_TOKEN,
     DEFAULT_VI_END_TOKEN,
+    DEFAULT_SUBGOAL_TOKEN,
+    DEFAULT_ACT_TOKEN,
     IGNORE_INDEX,
     IMAGE_TOKEN_INDEX,
 )
@@ -610,6 +612,22 @@ class VILAUMetaForCausalLM(ABC):
 
                 input_embeddings[-num_new_tokens:] = input_embeddings_avg
                 output_embeddings[-num_new_tokens:] = output_embeddings_avg
+
+        # Phase 4: Add special tokens for Visual CoT-VLA
+        if getattr(model_args, 'use_visual_cot', False):
+            num_cot_tokens = tokenizer.add_tokens([DEFAULT_SUBGOAL_TOKEN, DEFAULT_ACT_TOKEN], special_tokens=True)
+            if num_cot_tokens > 0:
+                self.resize_token_embeddings(len(tokenizer))
+                input_embeddings = self.get_input_embeddings().weight.data
+                output_embeddings = self.get_output_embeddings().weight.data
+
+                input_embeddings_avg = input_embeddings[:-num_cot_tokens].mean(dim=0, keepdim=True)
+                output_embeddings_avg = output_embeddings[:-num_cot_tokens].mean(dim=0, keepdim=True)
+
+                input_embeddings[-num_cot_tokens:] = input_embeddings_avg
+                output_embeddings[-num_cot_tokens:] = output_embeddings_avg
+
+                print(f"[Phase 4] Added {num_cot_tokens} special tokens: {DEFAULT_SUBGOAL_TOKEN}, {DEFAULT_ACT_TOKEN}")
     
     @torch.inference_mode()
     def generate(
@@ -952,3 +970,74 @@ class VILAUMetaForCausalLM(ABC):
 
         # 返回单个样本的动作
         return actions.squeeze(0)  # [chunk_size, action_dim]
+
+    # ===== Phase 4: Visual CoT-VLA Methods =====
+
+    def decode_subgoal_tokens(
+        self,
+        subgoal_token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        将生成的子目标 token IDs 解码为可视化图像。
+
+        Args:
+            subgoal_token_ids: [B, 1024] 生成的子目标 token IDs
+
+        Returns:
+            subgoal_images: [B, 3, 256, 256] 解码后的子目标图像，值域 [0, 255]
+        """
+        if not isinstance(self.vision_tower, RQVAESIGLIPTransformerVisionTower):
+            raise RuntimeError("Visual CoT requires RQVAESIGLIPTransformerVisionTower")
+
+        # 1. 将 token IDs 转换为 embeddings
+        # subgoal_token_ids: [B, 1024]
+        subgoal_embeds = self.vision_tower.vision_tower.rqtransformer.embed_with_model_aux(
+            subgoal_token_ids,
+            self.vision_tower.vision_tower.rqvaesiglip
+        )  # [B, 1024, depth, embed_dim]
+
+        # 2. 累积 depth 维度（RQ-VAE 的残差特性）
+        subgoal_embeds = torch.cumsum(subgoal_embeds, dim=-2)[:, :, -1, :]  # [B, 1024, embed_dim]
+
+        # 3. Reshape 为 2D 特征图
+        B = subgoal_embeds.shape[0]
+        subgoal_embeds = subgoal_embeds.reshape(B, 16, 16, -1)  # [B, 16, 16, embed_dim]
+
+        # 4. 解码为图像
+        subgoal_images = self.vision_tower.vision_tower.rqvaesiglip.decode(subgoal_embeds)
+        # [B, 3, 256, 256], 值域 [-1, 1]
+
+        # 5. 转换为可视化格式 [0, 255]
+        subgoal_images = subgoal_images.to(torch.float32).add_(1).mul_(127.5).clamp_(0, 255)
+
+        return subgoal_images
+
+    def encode_subgoal_image(
+        self,
+        subgoal_image: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        将子目标图像编码为 token IDs（用于计算损失）。
+
+        Args:
+            subgoal_image: [B, 3, 256, 256] 子目标图像，值域 [0, 255] 或 [-1, 1]
+
+        Returns:
+            subgoal_token_ids: [B, 1024] 编码后的 token IDs
+        """
+        if not isinstance(self.vision_tower, RQVAESIGLIPTransformerVisionTower):
+            raise RuntimeError("Visual CoT requires RQVAESIGLIPTransformerVisionTower")
+
+        # 归一化到 [-1, 1]
+        if subgoal_image.max() > 2.0:
+            subgoal_image = subgoal_image.div(127.5).sub_(1)
+
+        # 编码图像
+        code, _ = self.vision_tower.vision_tower.rqvaesiglip.encode_image(subgoal_image)
+        # code: [B, 16, 16, 4]
+
+        # Flatten 为 token IDs
+        B = code.shape[0]
+        subgoal_token_ids = code.reshape(B, -1)  # [B, 1024]
+
+        return subgoal_token_ids
