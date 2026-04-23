@@ -20,7 +20,9 @@
       "Bash(find /Users/sauvinci/repo/vila-u-main -name \"*.py\" -exec grep -l \"rqvaesiglip\\\\|RQVAE\" {})",
       "Bash(git pull:*)",
       "Bash(git stash:*)",
-      "Bash(find /Users/sauvinci/repo/vila-u-main/docs -name \"*.md\" -exec grep -l \"目标\\\\|方案\\\\|baseline\\\\|评测\" {})"
+      "Bash(find /Users/sauvinci/repo/vila-u-main/docs -name \"*.md\" -exec grep -l \"目标\\\\|方案\\\\|baseline\\\\|评测\" {})",
+      "Bash(pdftotext \"/Users/sauvinci/repo/Zhao 等 - 2025 - CoT-VLA Visual Chain-of-Thought Reasoning for Vision-Language-Action Models.pdf\" -)",
+      "Bash(find /Users/sauvinci/repo/vila-u-main -name \"*.py\" -exec grep -l \"decode\" {})"
     ]
   }
 }
