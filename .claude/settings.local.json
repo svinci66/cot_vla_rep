@@ -17,7 +17,9 @@
       "Bash(chmod:*)",
       "Bash(git remote:*)",
       "Bash(git restore:*)",
-      "Bash(find /Users/sauvinci/repo/vila-u-main -name \"*.py\" -exec grep -l \"rqvaesiglip\\\\|RQVAE\" {})"
+      "Bash(find /Users/sauvinci/repo/vila-u-main -name \"*.py\" -exec grep -l \"rqvaesiglip\\\\|RQVAE\" {})",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)"
     ]
   }
 }

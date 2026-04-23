@@ -190,9 +190,10 @@ class CoTVLADataCollator:
 
             # Encode subgoal images to codebook indices (token IDs)
             with torch.no_grad():
-                # Move to same device as vision tower
+                # Move to same device as vision tower and match dtype
                 device = next(self.vision_tower.parameters()).device
-                subgoal_images = subgoal_images.to(device)
+                dtype = next(self.vision_tower.parameters()).dtype
+                subgoal_images = subgoal_images.to(device=device, dtype=dtype)
 
                 # Encode: returns (code, z_q) where code is [B, H, W, depth]
                 code, _ = self.vision_tower.vision_tower.rqvaesiglip.encode_image(subgoal_images)
