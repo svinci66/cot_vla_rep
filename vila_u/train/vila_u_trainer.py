@@ -235,21 +235,28 @@ class VILAUTrainer(Trainer):
         accelerator_params = inspect.signature(Accelerator.__init__).parameters
 
         if "dispatch_batches" not in accelerator_params:
-            # Monkey patch: wrap Accelerator.__init__ to filter out dispatch_batches
-            original_init = Accelerator.__init__
+            # Save original value and temporarily set to None
+            original_dispatch_batches = getattr(self.args, 'dispatch_batches', None)
 
-            def patched_init(self, *args, **kwargs):
-                # Remove dispatch_batches if present
-                kwargs.pop('dispatch_batches', None)
-                return original_init(self, *args, **kwargs)
+            # Create a wrapper class that filters dispatch_batches
+            class AcceleratorWrapper(Accelerator):
+                def __init__(self, *args, **kwargs):
+                    # Remove dispatch_batches from kwargs
+                    kwargs.pop('dispatch_batches', None)
+                    super().__init__(*args, **kwargs)
 
-            Accelerator.__init__ = patched_init
+            # Temporarily replace Accelerator in transformers.trainer module
+            import transformers.trainer
+            original_accelerator = transformers.trainer.Accelerator
+            transformers.trainer.Accelerator = AcceleratorWrapper
 
             try:
                 result = super().create_accelerator_and_postprocess()
             finally:
-                # Restore original __init__
-                Accelerator.__init__ = original_init
+                # Restore original Accelerator
+                transformers.trainer.Accelerator = original_accelerator
+                if original_dispatch_batches is not None:
+                    self.args.dispatch_batches = original_dispatch_batches
 
             return result
         else:
