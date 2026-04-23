@@ -346,7 +346,8 @@ class CoTVLATrainer(VILAUTrainer):
                 # Compute action logits
                 action_logits = core_model.llm.lm_head(action_hidden_states)
                 selected_logits = compute_selected_token_logits(
-                    action_logits,
+                    action_hidden_states,
+                    core_model.llm.lm_head,
                     self.action_token_ids,
                 )
 
