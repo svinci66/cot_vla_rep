@@ -68,7 +68,7 @@ CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python -m vila_u.train.train_cot_vla 
     --lr_scheduler_type cosine \
     --logging_steps $LOGGING_STEPS \
     --tf32 True \
-    --model_max_length 512 \
+    --model_max_length 1536 \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \
     --report_to none
