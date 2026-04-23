@@ -9,7 +9,7 @@ from abc import ABC
 from collections import OrderedDict
 from transformers import AutoConfig, GenerationConfig, PreTrainedModel
 from transformers.modeling_utils import ContextManagers, no_init_weights
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
 
 from vila_u.constants import (
     DEFAULT_IMAGE_PATCH_TOKEN,
