@@ -225,6 +225,13 @@ class LengthGroupedSampler(Sampler):
 
 
 class VILAUTrainer(Trainer):
+    def create_accelerator_and_postprocess(self):
+        """Override to remove dispatch_batches parameter for accelerate compatibility"""
+        # Remove dispatch_batches from args if it exists (not supported in accelerate 0.34.2)
+        if hasattr(self.args, 'dispatch_batches'):
+            delattr(self.args, 'dispatch_batches')
+        return super().create_accelerator_and_postprocess()
+
     def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
         if self.train_dataset is None or not has_length(self.train_dataset):
             return None
