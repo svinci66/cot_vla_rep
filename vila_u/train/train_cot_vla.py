@@ -9,6 +9,13 @@ import pathlib
 import torch
 import transformers
 
+# Fix CUDA multiprocessing issue in DataLoader workers
+import torch.multiprocessing as mp
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass  # Already set
+
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
