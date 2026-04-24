@@ -310,7 +310,7 @@ class VisualCoTTrainer(VILAUTrainer):
         # 步骤 3：找到子目标在 inputs_embeds 中的位置并替换
         # 由于图像被展开，我们需要重新计算位置
         # 图像 token 数量
-        image_token_len = model.vision_tower.num_patches
+        image_token_len = model.vision_tower.image_tokens
 
         # 对于每个样本，找到子目标的位置
         for i in range(B):
