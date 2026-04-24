@@ -536,6 +536,24 @@ def train():
     model.llm.config.tokenizer_padding_side = tokenizer.padding_side
     model.llm.config.tokenizer_model_max_length = tokenizer.model_max_length
 
+    # Add special tokens for Visual CoT
+    from vila_u.train.train import smart_tokenizer_and_embedding_resize
+    special_tokens_dict = {}
+
+    # Add <subgoal> and <act> tokens if not present
+    if DEFAULT_SUBGOAL_TOKEN not in tokenizer.get_vocab():
+        special_tokens_dict["additional_special_tokens"] = [DEFAULT_SUBGOAL_TOKEN, DEFAULT_ACT_TOKEN]
+
+    if len(special_tokens_dict) > 0:
+        smart_tokenizer_and_embedding_resize(
+            special_tokens_dict=special_tokens_dict,
+            tokenizer=tokenizer,
+            model=model.llm,
+        )
+        print(f"Added special tokens: {special_tokens_dict}")
+        print(f"<subgoal> token id: {tokenizer.convert_tokens_to_ids(DEFAULT_SUBGOAL_TOKEN)}")
+        print(f"<act> token id: {tokenizer.convert_tokens_to_ids(DEFAULT_ACT_TOKEN)}")
+
     vision_tower = model.get_vision_tower()
     if vision_tower is None:
         raise ValueError("Visual CoT training requires a vision tower")
