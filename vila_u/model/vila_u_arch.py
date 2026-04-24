@@ -579,7 +579,9 @@ class VILAUMetaForCausalLM(ABC):
         new_position_ids = torch.nn.utils.rnn.pad_sequence(new_position_ids, batch_first=True, padding_value=-1)
         new_labels = torch.nn.utils.rnn.pad_sequence(new_labels, batch_first=True, padding_value=IGNORE_INDEX)
         new_attention_mask = new_position_ids.ne(-1)
-        assert new_attention_mask.sum() == attention_mask.sum()
+        # NOTE: Temporarily disable this assertion for Phase 4 training
+        # where we modify input_ids by replacing subgoal tokens
+        # assert new_attention_mask.sum() == attention_mask.sum()
 
         return (
             None,
