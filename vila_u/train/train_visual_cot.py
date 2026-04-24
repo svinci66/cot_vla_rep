@@ -167,13 +167,17 @@ class VisualCoTDataCollator:
             # 输入：prompt
             input_ids = prompts[i]
 
-            # 标签：[IGNORE] * len(prompt) + [subgoal_placeholder] + [act_token] + [action_tokens]
+            # 标签：[IGNORE] * len(prompt) + [subgoal_tokens] + [IGNORE(act)] + [action_tokens]
             labels = torch.full_like(input_ids, IGNORE_INDEX)
 
-            # 添加 <subgoal> token（占位符，表示这里应该生成子目标）
+            # 添加 <subgoal> token（占位符，训练时会被替换为 GT）
             subgoal_placeholder = torch.full((SUBGOAL_NUM_TOKENS,), self.subgoal_token_id, dtype=torch.long)
             input_ids = torch.cat([input_ids, subgoal_placeholder])
-            labels = torch.cat([labels, torch.full((SUBGOAL_NUM_TOKENS,), IGNORE_INDEX, dtype=torch.long)])
+
+            # 子目标部分的标签：暂时用占位符，训练时会被替换为 GT subgoal token IDs
+            # 这里先用 IGNORE_INDEX，在 compute_loss 中会更新
+            subgoal_labels_placeholder = torch.full((SUBGOAL_NUM_TOKENS,), IGNORE_INDEX, dtype=torch.long)
+            labels = torch.cat([labels, subgoal_labels_placeholder])
 
             # 添加 <act> token
             act_token = torch.tensor([self.act_token_id], dtype=torch.long)
@@ -271,12 +275,21 @@ class VisualCoTTrainer(VILAUTrainer):
         # 输入已经包含：[prompt] + [subgoal_placeholder] + [act] + [actions]
         # 我们需要用 GT 子目标替换 placeholder
 
-        # 找到 subgoal token 的位置并替换为 GT
+        # 克隆 input_ids 和 labels 避免修改原始数据
+        input_ids = input_ids.clone()
+        labels = labels.clone()
+
+        # 找到 subgoal token 的位置并替换为 GT（同时更新 input_ids 和 labels）
         for i in range(B):
             subgoal_start = prompt_lengths[i]
             subgoal_end = subgoal_start + SUBGOAL_NUM_TOKENS
             if subgoal_end <= input_ids.shape[1]:
+                # 替换 input_ids 中的占位符为 GT tokens
                 input_ids[i, subgoal_start:subgoal_end] = gt_subgoal_token_ids[i]
+                # 更新 labels：子目标部分应该预测 GT tokens
+                # 注意：labels 是 shifted，所以 labels[i] 对应预测 input_ids[i+1]
+                # 但在 HuggingFace 的实现中，shifting 是自动的
+                labels[i, subgoal_start:subgoal_end] = gt_subgoal_token_ids[i]
 
         # 3. 前向传播计算损失
         outputs = model(
