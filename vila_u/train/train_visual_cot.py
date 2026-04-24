@@ -294,15 +294,16 @@ class VisualCoTTrainer(VILAUTrainer):
         # 3. 前向传播计算损失
         # 策略：先让模型处理图像，得到 inputs_embeds，然后替换子目标部分的 embeddings
 
-        # 步骤 1：使用原始 input_ids 处理图像
-        (_, _, attention_mask_new, _, inputs_embeds, labels_new) = model.prepare_inputs_labels_for_multimodal(
-            inputs["input_ids"],  # 使用原始的，包含图像 token
-            None,
-            attention_mask,
-            None,
-            labels,
-            images
-        )
+        # 步骤 1：使用原始 input_ids 处理图像（确保在梯度计算上下文中）
+        with torch.enable_grad():
+            (_, _, attention_mask_new, _, inputs_embeds, labels_new) = model.prepare_inputs_labels_for_multimodal(
+                inputs["input_ids"],  # 使用原始的，包含图像 token
+                None,
+                attention_mask,
+                None,
+                labels,
+                images
+            )
 
         # 步骤 2：获取 GT 子目标 tokens 的 embeddings
         gt_subgoal_embeds = model.get_input_embeddings()(gt_subgoal_token_ids)  # [B, 1024, hidden_size]
@@ -326,11 +327,16 @@ class VisualCoTTrainer(VILAUTrainer):
             subgoal_end_expanded = subgoal_start_expanded + SUBGOAL_NUM_TOKENS
 
             if subgoal_end_expanded <= inputs_embeds.shape[1]:
-                # 替换 embeddings
+                # 替换 embeddings（使用 clone 保持梯度）
+                inputs_embeds = inputs_embeds.clone()
                 inputs_embeds[i, subgoal_start_expanded:subgoal_end_expanded] = gt_subgoal_embeds[i]
                 # 更新 labels
                 if labels_new is not None and subgoal_end_expanded <= labels_new.shape[1]:
                     labels_new[i, subgoal_start_expanded:subgoal_end_expanded] = gt_subgoal_token_ids[i]
+
+        # 确保 inputs_embeds 需要梯度
+        if not inputs_embeds.requires_grad:
+            inputs_embeds.requires_grad_(True)
 
         # 步骤 4：使用修改后的 inputs_embeds 进行前向传播
         # 注意：不能直接传递 2D attention_mask 给使用 gradient checkpointing 的模型
