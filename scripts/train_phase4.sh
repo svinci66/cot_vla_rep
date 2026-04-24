@@ -60,5 +60,4 @@ python -m vila_u.train.train_visual_cot \
     --pause_threshold 0.01 \
     --visual_loss_weight $VISUAL_LOSS_WEIGHT \
     --action_loss_weight $ACTION_LOSS_WEIGHT \
-    --dispatch_batches False \
     --report_to "wandb"

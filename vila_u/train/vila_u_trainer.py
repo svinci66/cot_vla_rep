@@ -1,5 +1,6 @@
 import torch
 import torch.distributed as dist
+import inspect
 
 from torch import nn
 from torch.utils.data import ConcatDataset, Dataset, DistributedSampler, Sampler
@@ -7,6 +8,7 @@ from transformers import Trainer
 from transformers.trainer import ALL_LAYERNORM_LAYERS
 from transformers.trainer import get_parameter_names, has_length, is_sagemaker_mp_enabled
 from typing import List, Optional, Dict, Union, Tuple, Any
+from accelerate import Accelerator
 
 from vila_u.mm_utils import KeywordsStoppingCriteria
 from vila_u.constants import IGNORE_INDEX
@@ -225,6 +227,40 @@ class LengthGroupedSampler(Sampler):
 
 
 class VILAUTrainer(Trainer):
+    def create_accelerator_and_postprocess(self):
+        """
+        Override to handle dispatch_batches parameter compatibility.
+
+        Some versions of accelerate don't support dispatch_batches parameter.
+        This method wraps the Accelerator to filter out the parameter if needed.
+        """
+        # Check if Accelerator supports dispatch_batches
+        accelerator_params = inspect.signature(Accelerator.__init__).parameters
+
+        if "dispatch_batches" not in accelerator_params:
+            # Create a wrapper class that filters dispatch_batches
+            class AcceleratorWrapper(Accelerator):
+                def __init__(self, *args, **kwargs):
+                    # Remove dispatch_batches from kwargs
+                    kwargs.pop('dispatch_batches', None)
+                    super().__init__(*args, **kwargs)
+
+            # Temporarily replace Accelerator in transformers.trainer module
+            import transformers.trainer
+            original_accelerator = transformers.trainer.Accelerator
+            transformers.trainer.Accelerator = AcceleratorWrapper
+
+            try:
+                result = super().create_accelerator_and_postprocess()
+            finally:
+                # Restore original Accelerator
+                transformers.trainer.Accelerator = original_accelerator
+
+            return result
+        else:
+            # dispatch_batches is supported, use default behavior
+            return super().create_accelerator_and_postprocess()
+
     def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
         if self.train_dataset is None or not has_length(self.train_dataset):
             return None
