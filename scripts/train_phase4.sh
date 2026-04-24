@@ -43,7 +43,7 @@ python -m vila_u.train.train_visual_cot \
     --save_steps 500 \
     --save_total_limit 3 \
     --model_max_length $MODEL_MAX_LENGTH \
-    --gradient_checkpointing True \
+    --gradient_checkpointing False \
     --dataloader_num_workers 4 \
     --bf16 True \
     --tf32 True \
