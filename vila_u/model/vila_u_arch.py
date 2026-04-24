@@ -1066,16 +1066,26 @@ class VILAUMetaForCausalLM(ABC):
         Returns:
             subgoal_token_ids: [B, max_new_tokens] 生成的子目标 token IDs
         """
-        # 使用模型的 generate 方法自回归生成
-        output_ids = self.generate(
-            input_ids=input_ids,
-            images=images,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            temperature=temperature,
-            use_cache=True,
-        )
+        # 临时禁用 gradient checkpointing 以避免 attention mask 维度问题
+        original_gradient_checkpointing = self.llm.config.use_cache
+        if hasattr(self.llm.model, 'gradient_checkpointing') and self.llm.model.gradient_checkpointing:
+            self.llm.model.gradient_checkpointing = False
+
+        try:
+            # 使用模型的 generate 方法自回归生成
+            output_ids = self.generate(
+                input_ids=input_ids,
+                images=images,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                do_sample=do_sample,
+                temperature=temperature,
+                use_cache=True,
+            )
+        finally:
+            # 恢复 gradient checkpointing 设置
+            if hasattr(self.llm.model, 'gradient_checkpointing'):
+                self.llm.model.gradient_checkpointing = True
 
         # 提取生成的 tokens（去掉输入部分）
         generated_tokens = output_ids[:, input_ids.shape[1]:]
