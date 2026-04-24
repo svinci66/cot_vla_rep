@@ -1066,29 +1066,26 @@ class VILAUMetaForCausalLM(ABC):
         Returns:
             subgoal_token_ids: [B, max_new_tokens] 生成的子目标 token IDs
         """
-        # 临时禁用 gradient checkpointing 以避免 attention mask 维度问题
-        original_gradient_checkpointing = self.llm.config.use_cache
-        if hasattr(self.llm.model, 'gradient_checkpointing') and self.llm.model.gradient_checkpointing:
-            self.llm.model.gradient_checkpointing = False
+        # 准备输入 embeddings
+        (_, _, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(
+            input_ids, None, attention_mask, None, None, images
+        )
 
-        try:
-            # 使用模型的 generate 方法自回归生成
-            output_ids = self.generate(
-                input_ids=input_ids,
-                images=images,
-                attention_mask=attention_mask,
-                max_new_tokens=max_new_tokens,
-                do_sample=do_sample,
-                temperature=temperature,
-                use_cache=True,
-            )
-        finally:
-            # 恢复 gradient checkpointing 设置
-            if hasattr(self.llm.model, 'gradient_checkpointing'):
-                self.llm.model.gradient_checkpointing = True
+        # 使用 llm.generate，但不传递 attention_mask（让它自动处理）
+        output_ids = self.llm.generate(
+            inputs_embeds=inputs_embeds,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature if do_sample else 1.0,
+            use_cache=True,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
 
         # 提取生成的 tokens（去掉输入部分）
-        generated_tokens = output_ids[:, input_ids.shape[1]:]
+        # 注意：inputs_embeds 的长度可能与 input_ids 不同（因为图像被展开了）
+        input_length = inputs_embeds.shape[1]
+        generated_tokens = output_ids[:, input_length:]
 
         return generated_tokens
 
