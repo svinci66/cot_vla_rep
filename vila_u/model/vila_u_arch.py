@@ -1032,6 +1032,9 @@ class VILAUMetaForCausalLM(ABC):
         if subgoal_image.max() > 2.0:
             subgoal_image = subgoal_image.div(127.5).sub_(1)
 
+        # 转换为模型的 dtype（bfloat16 或 float16）
+        subgoal_image = subgoal_image.to(self.dtype)
+
         # 编码图像
         code, _ = self.vision_tower.vision_tower.rqvaesiglip.encode_image(subgoal_image)
         # code: [B, 16, 16, 4]
