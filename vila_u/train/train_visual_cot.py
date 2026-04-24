@@ -310,6 +310,12 @@ class VisualCoTTrainer(VILAUTrainer):
             print(f"[DEBUG] prompt_lengths: {prompt_lengths}")
             print(f"[DEBUG] subgoal_token_id: {subgoal_token_id}")
             print(f"[DEBUG] First sample subgoal tokens: {input_ids[0, prompt_lengths[0]:prompt_lengths[0]+10]}")
+            print(f"[DEBUG] GT subgoal token IDs shape: {gt_subgoal_token_ids.shape}")
+            print(f"[DEBUG] GT subgoal first 10 tokens: {gt_subgoal_token_ids[0, :10]}")
+            print(f"[DEBUG] Pad token id: {self.tokenizer.pad_token_id}")
+            print(f"[DEBUG] Attention mask sum before: {inputs['attention_mask'].sum()}")
+            print(f"[DEBUG] Attention mask sum after: {attention_mask.sum()}")
+            print(f"[DEBUG] Any padding in GT subgoal? {(gt_subgoal_token_ids == self.tokenizer.pad_token_id).any()}")
 
         outputs = model(
             input_ids=input_ids,
