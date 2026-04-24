@@ -265,8 +265,10 @@ class VisualCoTTrainer(VILAUTrainer):
             if len(subgoal_positions) > 0:
                 prompt_lengths.append(subgoal_positions[0].item())
             else:
-                # 如果没有找到，使用整个序列长度
-                prompt_lengths.append(attention_mask[i].sum().item())
+                # 如果没有找到，使用非 padding 的序列长度
+                # 注意：这里使用原始 input_ids，因为我们还没有修改它
+                non_pad_mask = input_ids[i].ne(self.tokenizer.pad_token_id)
+                prompt_lengths.append(non_pad_mask.sum().item())
 
         # 1. 编码 GT 子目标图像为 tokens
         gt_subgoal_token_ids = model.encode_subgoal_image(subgoal_images)  # [B, 1024]
@@ -298,6 +300,16 @@ class VisualCoTTrainer(VILAUTrainer):
         # 重要：由于我们修改了 input_ids，需要确保 attention_mask 匹配
         # 重新生成 attention_mask
         attention_mask = input_ids.ne(self.tokenizer.pad_token_id).long()
+
+        # 调试信息（第一个 step 打印）
+        if self.state.global_step == 0:
+            print(f"[DEBUG] input_ids shape: {input_ids.shape}")
+            print(f"[DEBUG] attention_mask shape: {attention_mask.shape}")
+            print(f"[DEBUG] labels shape: {labels.shape}")
+            print(f"[DEBUG] images shape: {images.shape}")
+            print(f"[DEBUG] prompt_lengths: {prompt_lengths}")
+            print(f"[DEBUG] subgoal_token_id: {subgoal_token_id}")
+            print(f"[DEBUG] First sample subgoal tokens: {input_ids[0, prompt_lengths[0]:prompt_lengths[0]+10]}")
 
         outputs = model(
             input_ids=input_ids,
