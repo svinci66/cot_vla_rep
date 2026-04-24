@@ -295,6 +295,10 @@ class VisualCoTTrainer(VILAUTrainer):
         # 简化方案：直接使用模型的标准前向传播，让它自己处理图像
         # 我们只需要确保 input_ids 和 labels 中包含正确的子目标 tokens
 
+        # 重要：由于我们修改了 input_ids，需要确保 attention_mask 匹配
+        # 重新生成 attention_mask
+        attention_mask = input_ids.ne(self.tokenizer.pad_token_id).long()
+
         outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
