@@ -10,8 +10,8 @@ export ATTN_IMPLEMENTATION="eager"  # Phase 4 需要使用 eager attention
 export ACCELERATE_DISPATCH_BATCHES="0"  # 禁用 dispatch_batches 以兼容旧版本 accelerate
 
 # 模型和数据路径
-MODEL_PATH="/data/models/VILA-U-Llama3-8B"
-DATA_ROOT="/data/libero/libero_goal"
+MODEL_PATH="/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"
+DATA_ROOT="/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"
 OUTPUT_DIR="./checkpoints/phase4-visual-cot"
 
 # 训练参数
