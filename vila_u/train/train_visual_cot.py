@@ -331,6 +331,15 @@ class VisualCoTTrainer(VILAUTrainer):
         # 简化版本：直接使用总损失作为联合损失
         total_loss = outputs.loss if outputs.loss is not None else torch.tensor(0.0, device=device)
 
+        # 调试：检查损失是否为 nan
+        if self.state.global_step < 5:
+            print(f"[DEBUG] Step {self.state.global_step}: total_loss = {total_loss.item()}")
+            print(f"[DEBUG] Labels stats: min={labels.min()}, max={labels.max()}")
+            print(f"[DEBUG] Valid labels (not IGNORE_INDEX): {(labels != IGNORE_INDEX).sum()}")
+            print(f"[DEBUG] Subgoal labels count: {(labels != IGNORE_INDEX).sum() - (labels == IGNORE_INDEX).sum()}")
+            if outputs.logits is not None:
+                print(f"[DEBUG] Logits stats: min={outputs.logits.min()}, max={outputs.logits.max()}, has_nan={torch.isnan(outputs.logits).any()}")
+
         # 为了监控，我们可以单独计算视觉损失
         # 重新前向传播只获取子目标部分的 logits
         with torch.no_grad():
