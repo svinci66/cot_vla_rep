@@ -333,9 +333,11 @@ class VisualCoTTrainer(VILAUTrainer):
                     labels_new[i, subgoal_start_expanded:subgoal_end_expanded] = gt_subgoal_token_ids[i]
 
         # 步骤 4：使用修改后的 inputs_embeds 进行前向传播
+        # 注意：不能直接传递 2D attention_mask 给使用 gradient checkpointing 的模型
+        # 需要让模型自己处理 attention_mask，或者传递 None
         outputs = model.llm(
             inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask_new,
+            attention_mask=None,  # 让模型自动生成 attention mask
             labels=labels_new,
             return_dict=True,
         )
