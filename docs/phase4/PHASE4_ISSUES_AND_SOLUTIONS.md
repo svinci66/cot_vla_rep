@@ -357,11 +357,296 @@ subgoal_image = subgoal_image.to(model.dtype)
 
 ---
 
-## 推荐的实现方案
+## ✅ Phase 3 已实现的功能
+
+### 1. 混合注意力机制（Hybrid Attention）
+
+**论文要求**：
+> "We use causal attention with next-token prediction for text and image generation, and leverage full attention to predict all action dimensions at once."
+
+**Phase 3 实现**：✅ **已完整实现**
+
+位置：`vila_u/utils/hybrid_attention.py`
+
+```python
+def build_hybrid_attention_mask(
+    attention_mask: torch.Tensor,
+    num_action_tokens: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """
+    构建混合注意力掩码：
+    - 文本和图像区域：因果注意力（下三角矩阵）
+    - 动作区域：全注意力（全 1 矩阵）
+    """
+    # 1. 默认使用因果注意力
+    causal = torch.tril(torch.ones((valid_len, valid_len)))
+
+    # 2. 动作区域升级为全注意力
+    action_start = valid_len - num_action_tokens
+    allowed[action_start:valid_len, :valid_len] = True  # 全注意力
+```
+
+**使用方式**：
+```python
+# 在训练脚本中
+if config.use_hybrid_attention:
+    hybrid_attention_mask = build_hybrid_attention_mask(
+        attention_mask=attention_mask,
+        num_action_tokens=num_action_tokens,
+        dtype=torch.bfloat16
+    )
+    outputs = model(
+        input_ids=input_ids,
+        attention_mask=hybrid_attention_mask,  # 使用混合注意力
+        labels=labels
+    )
+```
+
+**配置参数**：
+```bash
+# scripts/train_phase3.sh
+--use_hybrid_attention True  # 启用混合注意力
+```
+
+---
+
+### 2. 动作词表复用（Vocabulary Repurposing）
+
+**论文要求**：
+> "We repurpose the 256 least frequently used tokens in the text tokenizer's vocabulary as action bin tokens."
+
+**Phase 3 实现**：✅ **已实现**
+
+位置：`vila_u/train/train_action_prediction_main.py`
+
+```python
+# 选择使用频率最低的 256 个 tokens 作为动作 bins
+action_token_ids = select_least_frequent_tokens(
+    tokenizer=tokenizer,
+    num_bins=256
+)
+```
+
+**优点**：
+- ✅ 不需要扩展词表
+- ✅ 节省显存
+- ✅ 复用现有的 lm_head
+
+---
+
+## ⚠️ Phase 4 需要新增的功能
+
+### 1. Depth Transformer（核心新增）
+
+**论文要求**：
+> "A dedicated Depth Transformer ($P_\delta$) autoregressively predicts $D$ residual tokens $(k_{j1},...,k_{jD})$ based on the code embedding $h_j$."
+
+**Phase 3 状态**：❌ **未实现**
+
+**Phase 4 需要**：
+- 实现 `DepthTransformer` 模块
+- 自回归预测 RQ-VAE 的 4 个残差 tokens
+- 计算视觉损失 $\mathcal{L}_{visual}$
+
+---
+
+### 2. 子目标图像处理
+
+**论文要求**：
+- 子目标图像通过 Vision Tower + Projector 转换为 embeddings
+- 不能作为离散 Token IDs 放入 input_ids
+
+**Phase 3 状态**：❌ **未实现**（Phase 3 不涉及子目标）
+
+**Phase 4 需要**：
+- 添加子目标图像的输入处理
+- 通过 Vision Tower + Projector 编码
+- 拼接到 LLM 输入的 embeddings 中
+
+---
+
+### 3. 双解码路径
+
+**论文要求**：
+- 视觉路径：Depth Transformer 预测图像 tokens
+- 动作路径：lm_head 预测动作 tokens
+
+**Phase 3 状态**：⚠️ **部分实现**（只有动作路径）
+
+**Phase 4 需要**：
+- 添加视觉解码路径（Depth Transformer）
+- 分离视觉损失和动作损失的计算
+- 联合训练两个路径
+
+---
+
+## Phase 4 实现方案（更新）
 
 ### 方案 1: 简化版（推荐先实现）⭐
 
 **目标**: 验证训练流程，使用 GT 子目标 embeddings
+
+**基于 Phase 3 的修改**：
+```python
+class VisualCoTTrainer(ActionPredictionTrainer):  # 继承 Phase 3 的 Trainer
+    def compute_loss(self, model, inputs):
+        # 1. 处理子目标图像（新增）
+        gt_subgoal_features = model.vision_tower(inputs['subgoal_images'])
+        gt_subgoal_embeds = model.mm_projector(gt_subgoal_features)
+
+        # 2. 拼接输入（修改）
+        full_embeds = torch.cat([
+            obs_embeds,
+            text_embeds,
+            gt_subgoal_embeds,  # 新增：子目标 embeddings
+            action_embeds
+        ], dim=1)
+
+        # 3. 使用 Phase 3 的混合注意力（复用）✅
+        if self.use_hybrid_attention:
+            hybrid_mask = build_hybrid_attention_mask(
+                attention_mask=attention_mask,
+                num_action_tokens=num_action_tokens,
+                dtype=torch.bfloat16
+            )
+
+        # 4. 前向传播
+        outputs = model.llm.model(
+            inputs_embeds=full_embeds,
+            attention_mask=hybrid_mask  # 复用 Phase 3 的混合注意力
+        )
+
+        # 5. 只在动作部分计算损失（与 Phase 3 相同）
+        action_loss = F.cross_entropy(action_logits, gt_actions)
+
+        return action_loss
+```
+
+**复用 Phase 3 的功能**：
+- ✅ 混合注意力机制
+- ✅ 动作词表复用
+- ✅ 数据加载和预处理框架
+- ✅ 训练循环和日志记录
+
+**新增功能**：
+- 子目标图像的加载和处理
+- 子目标 embeddings 的拼接
+
+---
+
+### 方案 2: 完整版（Depth Transformer）⭐⭐⭐
+
+**目标**: 实现论文的完整方法，让模型学习生成子目标
+
+**基于 Phase 3 的修改**：
+```python
+class VisualCoTModel(VILAULlamaModel):
+    def __init__(self, config):
+        super().__init__(config)
+        # 新增：Depth Transformer
+        self.depth_transformer = DepthTransformer(
+            hidden_dim=config.hidden_size,
+            num_codebooks=4,
+            codebook_size=16384
+        )
+
+    def forward(self, input_ids, images, subgoal_images, labels, attention_mask):
+        # 1. 处理输入（与方案 1 相同）
+        full_embeds = self._prepare_multimodal_inputs(...)
+
+        # 2. 使用 Phase 3 的混合注意力（复用）✅
+        if self.config.use_hybrid_attention:
+            hybrid_mask = build_hybrid_attention_mask(
+                attention_mask=attention_mask,
+                num_action_tokens=self.config.action_chunk_size * self.config.action_dim,
+                dtype=self.dtype
+            )
+        else:
+            hybrid_mask = attention_mask
+
+        # 3. LLM 前向传播
+        outputs = self.llm.model(
+            inputs_embeds=full_embeds,
+            attention_mask=hybrid_mask  # 使用混合注意力
+        )
+
+        # 4. 双解码路径
+        # 4.1 视觉路径：Depth Transformer（新增）
+        subgoal_hidden = outputs.last_hidden_state[:, subgoal_positions, :]
+        visual_loss = self.depth_transformer.compute_loss(
+            code_embeddings=subgoal_hidden,
+            target_tokens=gt_subgoal_tokens
+        )
+
+        # 4.2 动作路径：lm_head（与 Phase 3 相同）✅
+        action_hidden = outputs.last_hidden_state[:, action_positions, :]
+        action_logits = self.llm.lm_head(action_hidden)
+        action_loss = F.cross_entropy(action_logits, gt_action_tokens)
+
+        # 5. 联合损失
+        return visual_loss + action_loss
+```
+
+**复用 Phase 3 的功能**：
+- ✅ 混合注意力机制（关键！）
+- ✅ 动作词表复用
+- ✅ 动作解码路径（lm_head）
+- ✅ 训练框架
+
+**新增功能**：
+- Depth Transformer 模块
+- 视觉解码路径
+- 子目标图像处理
+- 双路径损失计算
+
+---
+
+## 关键要点总结（更新）
+
+### ✅ Phase 3 已实现（可直接复用）
+
+1. **混合注意力机制**：
+   ```python
+   # 文本/图像：因果注意力
+   # 动作：全注意力
+   hybrid_mask = build_hybrid_attention_mask(...)
+   ```
+
+2. **动作词表复用**：
+   ```python
+   # 使用频率最低的 256 个 tokens
+   action_token_ids = select_least_frequent_tokens(tokenizer, 256)
+   ```
+
+3. **动作解码路径**：
+   ```python
+   # 标准的 lm_head
+   action_logits = model.llm.lm_head(hidden_states)
+   ```
+
+### ⚠️ Phase 4 需要新增
+
+1. **Depth Transformer**：
+   ```python
+   # 自回归预测 RQ-VAE tokens
+   visual_loss = depth_transformer.compute_loss(...)
+   ```
+
+2. **子目标图像处理**：
+   ```python
+   # 通过 Vision Tower + Projector
+   subgoal_embeds = mm_projector(vision_tower(subgoal_images))
+   ```
+
+3. **视觉解码路径**：
+   ```python
+   # 与动作路径分离
+   visual_loss = depth_transformer(...)
+   action_loss = F.cross_entropy(lm_head(...), ...)
+   ```
+
+---
 
 ```python
 class VisualCoTTrainer:
