@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
-from vila_u.data.libero_dataset import LiberoDataset
+from vila_u.data.libero_dataset import LiberoGoalDataset
 from vila_u.model.builder import load_pretrained_model
 from vila_u.constants import ACTION_DIM
 
@@ -60,7 +60,7 @@ def evaluate_offline(
 
     # 2. 加载测试集
     print("\n[2/3] Loading test dataset...")
-    dataset = LiberoDataset(
+    dataset = LiberoGoalDataset(
         data_path=data_path,
         tokenizer=tokenizer,
         image_processor=image_processor,
