@@ -1045,6 +1045,12 @@ class VILAUMetaForCausalLM(ABC):
         B = code.shape[0]
         subgoal_token_ids = code.reshape(B, -1)  # [B, 1024]
 
+        # IMPORTANT: Add text_vocab_size offset to image tokens
+        # Image tokens are codebook indices (0-16384) and need to be offset
+        # to avoid collision with text tokens
+        text_vocab_size = self.llm.config.vocab_size
+        subgoal_token_ids = subgoal_token_ids + text_vocab_size
+
         return subgoal_token_ids
 
     @torch.no_grad()
