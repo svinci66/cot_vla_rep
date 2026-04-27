@@ -92,8 +92,8 @@ def evaluate_offline(
 
             B = observations.shape[0]
 
-            # 处理图像
-            images = process_images(observations, image_processor, model.config)
+            # 处理图像 - 直接使用image_processor
+            images = image_processor.preprocess(observations, return_tensors='pt')['pixel_values']
             images = images.to(dtype=model.dtype, device=device)
 
             # 构建输入文本
