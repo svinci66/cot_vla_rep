@@ -5,12 +5,114 @@
 
 ---
 
+## ⚠️ 核心误区：忽略了 VILA-U 的 Depth Transformer 机制
+
+### 开发者的根本性错误
+
+**错误假设**：试图让 LLM 的标准 Embedding 层编码图像 token IDs，并让标准的 lm_head 预测图像 tokens。
+
+**为什么这必然失败**：
+- LLM 的 Embedding 层是为**文本 tokens** 设计的
+- LLM 的 lm_head 输出的是**文本词汇表**的 logits
+- 图像 tokens（RQ-VAE codebook indices）与文本 tokens 是**完全不同的模态**
+
+### 论文的真实实现方式
+
+#### 1. 图像输入（Input Embeddings）
+
+**论文原文**：
+> 基础模型 VILA-U 包含一个统一的视觉塔（vision tower），提取出的视觉特征会"先通过一个投影层（projector），然后再由 LLM 主干网络处理"。
+
+**正确做法**：
+```python
+# ❌ 错误：将图像 token IDs 放入 input_ids
+input_ids[subgoal_positions] = image_token_ids  # 会导致 embedding 层崩溃
+
+# ✅ 正确：通过 Vision Tower + Projector 处理图像
+subgoal_features = vision_tower(subgoal_image)  # [B, num_patches, vision_dim]
+subgoal_embeds = mm_projector(subgoal_features)  # [B, num_patches, hidden_dim]
+
+# 拼接到 LLM 输入（在 embedding 空间）
+full_embeds = torch.cat([text_embeds, subgoal_embeds, action_embeds], dim=1)
+```
+
+**关键点**：
+- 子目标图像**不是离散的 Token IDs**
+- 而是通过 Vision Tower 提取的**连续 embeddings**
+- 这些 embeddings 直接拼接到 LLM 的输入中
+
+#### 2. 图像生成（Output & Loss）
+
+**论文原文**：
+> 对于视觉 Tokens 的预测，并没有使用标准的 lm_head。相反，在每个视觉位置 $j$，LLM 会生成一个连续的 code embedding $h_j$。随后，一个专用的 **Depth Transformer** ($P_\delta$) 会基于这个 $h_j$ 自回归地预测出 $D$ 个残差 token $(k_{j1},...,k_{jD})$。
+
+**正确做法**：
+```python
+class VisualCoTModel(VILAULlamaModel):
+    def __init__(self, config):
+        super().__init__(config)
+        # ✅ 添加 Depth Transformer（不是简单的 Linear）
+        self.depth_transformer = DepthTransformer(
+            hidden_dim=config.hidden_size,
+            num_codebooks=4,  # RQ-VAE 的残差层数
+            codebook_size=16384
+        )
+
+    def forward(self, ...):
+        # 1. LLM 生成 hidden states
+        hidden_states = self.llm.model(inputs_embeds=full_embeds)
+
+        # 2. 子目标位置：使用 Depth Transformer 预测图像 tokens
+        subgoal_hidden = hidden_states[:, subgoal_positions, :]  # [B, 1024, hidden_dim]
+
+        # Depth Transformer 自回归预测 D 个残差 tokens
+        visual_loss = self.depth_transformer.compute_loss(
+            code_embeddings=subgoal_hidden,
+            target_tokens=gt_subgoal_tokens  # [B, 1024, 4]，4 个 codebook indices
+        )
+
+        # 3. 动作位置：使用标准 lm_head 预测文本 tokens
+        action_hidden = hidden_states[:, action_positions, :]
+        action_logits = self.llm.lm_head(action_hidden)
+        action_loss = F.cross_entropy(action_logits, gt_action_tokens)
+
+        # 4. 联合损失
+        return action_loss + visual_loss
+```
+
+**关键点**：
+- **视觉损失**：通过 **Depth Transformer** 计算
+- **动作损失**：通过 LLM 的 **lm_head** 计算
+- 两者是**完全独立的解码路径**
+
+#### 3. 完整的架构图
+
+```
+输入阶段：
+观测图像 → Vision Tower → Projector → [观测 embeddings]
+文本指令 → Text Embedding → [文本 embeddings]
+子目标图像(GT) → Vision Tower → Projector → [子目标 embeddings]  # 训练时
+
+拼接：[观测 embeddings] + [文本 embeddings] + [子目标 embeddings] + [动作 tokens]
+
+LLM 主干：
+full_embeds → LLM Transformer → hidden_states
+
+解码阶段（双路径）：
+路径 1（视觉）：hidden_states[subgoal_pos] → Depth Transformer → 预测图像 tokens → visual_loss
+路径 2（动作）：hidden_states[action_pos] → lm_head → 预测动作 tokens → action_loss
+
+总损失：loss = visual_loss + action_loss
+```
+
+---
+
 ## 问题总结
 
 ### 1. 核心架构问题
 
 #### 问题描述
-尝试让 LLM 直接生成图像 tokens（RQ-VAE codebook indices），但遇到根本性的架构不匹配问题。
+尝试让 LLM 的标准 Embedding 层和 lm_head 处理图像 tokens，忽略了 VILA-U 的 Depth Transformer 机制。
 
 #### 具体表现
 
@@ -111,67 +213,106 @@ AssertionError: new_attention_mask.sum() != attention_mask.sum()
 
 ### 可能的实现方式
 
-#### 方式 A: 扩展 Vocab（文档暗示）
+#### 方式 A / 方案 2: 扩展 Vocab ❌ **论文未采用**
+
 ```python
-# 1. 扩展 embedding 和 lm_head
+# 扩展 embedding 和 lm_head
 model.llm.resize_token_embeddings(text_vocab_size + 16384)
-
-# 2. 图像 tokens 加 offset
-image_token_ids = codebook_indices + text_vocab_size
-
-# 3. 正常训练
-# - 子目标位置预测 32006-48390
-# - 动作位置预测 0-32006
 
 # ❌ 问题：embedding 层太大（48390 维）
 # ❌ 问题：训练不稳定
+# ❌ 问题：大量 embeddings 不会被用到（浪费）
 ```
 
-#### 方式 B: 使用 Embeddings 而非 Token IDs（推测）
+**论文对照**：
+- 论文**没有采用**这种方法
+- 论文依赖 VILA-U 的 RQ-VAE 和 **Depth Transformer**
+- 不需要将 LLM 的文本词表强行扩充 16384 维
+- 开发者的直觉（这样做不稳定且有大量浪费）是**完全正确的**
+
+---
+
+#### 方式 B / 方案 1: 简化版（使用 GT Embeddings）✅ **推荐先实现**
+
 ```python
 # 1. 编码 GT 子目标为 embeddings（不是 token IDs）
-gt_subgoal_embeds = vision_tower.encode(subgoal_images)  # [B, 1024, hidden_dim]
+gt_subgoal_embeds = vision_tower(subgoal_images)  # [B, 1024, hidden_dim]
+gt_subgoal_embeds = mm_projector(gt_subgoal_embeds)
 
 # 2. 拼接序列
 full_embeds = torch.cat([
     text_embeds,
-    gt_subgoal_embeds,  # 直接使用 embeddings
+    gt_subgoal_embeds,  # 直接使用 GT embeddings
     action_embeds
 ], dim=1)
 
 # 3. 只在动作部分计算损失
 action_loss = F.cross_entropy(action_logits, gt_actions)
 
-# ✅ 优点：不需要扩展 vocab
-# ✅ 优点：训练稳定
+# ✅ 优点：不需要扩展 vocab，训练稳定
+# ✅ 优点：可以验证训练流程
+# ✅ 优点：等价于"完美视觉推理"（Perfect Visual Reasoning）
 # ❌ 缺点：模型不学习"生成"子目标，只是使用 GT
 ```
 
-#### 方式 C: 双解码器（我们的推测）
+**论文对照**：
+- 这是一个**极其明智的工程 Debug 策略**
+- 等价于强制模型进行**完美视觉推理**（Perfect Visual Reasoning）
+- 论文在 **4.4 节（Better Visual Reasoning Helps）** 中做了类似的消融实验
+- 对比了"使用模型生成的子目标"与"使用 Ground-truth 子目标"的差异
+- **实现这一版不仅能验证 Pipeline，还能作为后续对比的上限 Baseline**
+
+---
+
+#### 方式 C / 方案 3: Depth Transformer ✅ **论文的真实实现**
+
 ```python
-class VisualCoTModel:
-    def __init__(self):
-        self.llm = LlamaForCausalLM(...)
-        self.image_token_head = nn.Linear(hidden_size, 16384)  # 专门的图像 token head
+class VisualCoTModel(VILAULlamaModel):
+    def __init__(self, config):
+        super().__init__(config)
+        # ✅ 添加 Depth Transformer（不是简单的 Linear）
+        self.depth_transformer = DepthTransformer(
+            hidden_dim=config.hidden_size,
+            num_codebooks=4,  # RQ-VAE 的残差层数
+            codebook_size=16384
+        )
 
     def forward(self, ...):
-        hidden_states = self.llm.model(...)
+        # 1. 通过 Vision Tower + Projector 处理图像输入
+        obs_embeds = self.mm_projector(self.vision_tower(obs_images))
 
-        # 子目标部分：使用 image_token_head
-        image_logits = self.image_token_head(
-            hidden_states[subgoal_positions]
-        )  # [B*1024, 16384]
+        # 2. 拼接输入（在 embedding 空间）
+        full_embeds = torch.cat([obs_embeds, text_embeds], dim=1)
 
-        # 动作部分：使用 lm_head
-        action_logits = self.llm.lm_head(
-            hidden_states[action_positions]
-        )  # [B*70, vocab_size]
+        # 3. LLM 生成 hidden states
+        hidden_states = self.llm.model(inputs_embeds=full_embeds)
 
-# ✅ 优点：架构清晰，各司其职
-# ✅ 优点：可以真正学习生成子目标
-# ❌ 缺点：需要修改模型架构
-# ❌ 缺点：论文没有明确提到
+        # 4. 子目标位置：使用 Depth Transformer 预测图像 tokens
+        subgoal_hidden = hidden_states[:, subgoal_positions, :]
+        visual_loss = self.depth_transformer.compute_loss(
+            code_embeddings=subgoal_hidden,
+            target_tokens=gt_subgoal_tokens  # [B, 1024, 4]
+        )
+
+        # 5. 动作位置：使用 lm_head 预测文本 tokens
+        action_hidden = hidden_states[:, action_positions, :]
+        action_logits = self.llm.lm_head(action_hidden)
+        action_loss = F.cross_entropy(action_logits, gt_action_tokens)
+
+        return action_loss + visual_loss
 ```
+
+**论文对照**：
+- ✅ 这是**论文的真实实现方式**
+- ✅ 使用 **Depth Transformer** 而不是简单的 Linear 层
+- ✅ 图像输入通过 **Vision Tower + Projector**，不走 Text Embedding
+- ✅ 图像输出通过 **Depth Transformer**，不走 lm_head
+- ✅ 双解码路径：视觉路径 + 动作路径
+
+**Depth Transformer 的作用**：
+- 自回归地预测 RQ-VAE 的 **D 个残差 tokens**（通常 D=4）
+- 每个位置 $j$ 生成 $(k_{j1}, k_{j2}, k_{j3}, k_{j4})$
+- 这是一个**专门为图像 tokens 设计的解码器**
 
 ---
 
@@ -220,34 +361,36 @@ subgoal_image = subgoal_image.to(model.dtype)
 
 ### 方案 1: 简化版（推荐先实现）⭐
 
-**目标**: 验证训练流程，不实现真正的子目标生成
+**目标**: 验证训练流程，使用 GT 子目标 embeddings
 
 ```python
 class VisualCoTTrainer:
     def compute_loss(self, model, inputs):
-        # 1. 编码 GT 子目标为 embeddings
-        gt_subgoal_embeds = model.vision_tower.encode(
-            inputs['subgoal_images']
-        )  # [B, 1024, hidden_dim]
+        # 1. 通过 Vision Tower + Projector 处理图像
+        obs_features = model.vision_tower(inputs['observation_images'])
+        obs_embeds = model.mm_projector(obs_features)  # [B, num_patches, hidden_dim]
 
-        # 2. 准备输入 embeddings
-        text_embeds = model.get_input_embeddings()(inputs['input_ids'])
+        gt_subgoal_features = model.vision_tower(inputs['subgoal_images'])
+        gt_subgoal_embeds = model.mm_projector(gt_subgoal_features)  # [B, num_patches, hidden_dim]
 
-        # 3. 拼接序列（在 embedding 空间）
-        # [text] + [GT subgoal embeddings] + [action tokens]
-        full_embeds = self._concat_embeddings(
+        # 2. 准备文本和动作 embeddings
+        text_embeds = model.get_input_embeddings()(inputs['text_tokens'])
+        action_embeds = model.get_input_embeddings()(inputs['action_tokens'])
+
+        # 3. 拼接完整序列（在 embedding 空间）
+        full_embeds = torch.cat([
+            obs_embeds,
             text_embeds,
-            gt_subgoal_embeds,
+            gt_subgoal_embeds,  # 使用 GT 子目标 embeddings
             action_embeds
-        )
+        ], dim=1)
 
         # 4. 前向传播
         outputs = model.llm.model(inputs_embeds=full_embeds)
 
         # 5. 只在动作部分计算损失
-        action_logits = model.llm.lm_head(
-            outputs.last_hidden_state[:, -action_len:]
-        )
+        action_hidden = outputs.last_hidden_state[:, -action_len:]
+        action_logits = model.llm.lm_head(action_hidden)
         action_loss = F.cross_entropy(action_logits, gt_actions)
 
         return action_loss
@@ -258,6 +401,7 @@ class VisualCoTTrainer:
 - ✅ 不需要扩展 vocab
 - ✅ 训练稳定
 - ✅ 可以快速验证数据流和训练流程
+- ✅ 等价于"完美视觉推理"，可作为上限 Baseline
 
 **缺点**:
 - ❌ 模型不学习生成子目标
@@ -266,109 +410,233 @@ class VisualCoTTrainer:
 **适用场景**:
 - 第一阶段：验证训练流程
 - 消融实验：测试子目标对动作预测的帮助
+- 上限 Baseline：对比完整实现的效果
 
 ---
 
-### 方案 2: 扩展 Vocab（如果论文确实这样做）
+### 方案 2: 完整版（Depth Transformer）⭐⭐⭐
 
-**目标**: 让 LLM 直接生成图像 tokens
+**目标**: 实现论文的完整方法，让模型学习生成子目标
+
+#### 步骤 1: 实现 Depth Transformer
 
 ```python
-# 1. 初始化时扩展 vocab
-text_vocab_size = tokenizer.vocab_size  # 32006
-total_vocab_size = text_vocab_size + 16384  # 48390
-model.llm.resize_token_embeddings(total_vocab_size)
+class DepthTransformer(nn.Module):
+    """
+    自回归预测 RQ-VAE 的 D 个残差 tokens
 
-# 2. 训练时
-gt_subgoal_token_ids = codebook_indices + text_vocab_size  # 32006-48390
-input_ids[subgoal_positions] = gt_subgoal_token_ids
-labels[subgoal_positions] = gt_subgoal_token_ids
+    输入: code_embeddings [B, N, hidden_dim]
+    输出: D 个 codebook indices [B, N, D]
+    """
+    def __init__(self, hidden_dim, num_codebooks=4, codebook_size=16384):
+        super().__init__()
+        self.num_codebooks = num_codebooks
+        self.codebook_size = codebook_size
 
-# 3. 正常训练
-outputs = model(input_ids=input_ids, labels=labels)
-loss = outputs.loss  # 包含子目标和动作的损失
+        # 为每个 codebook 层创建预测头
+        self.codebook_heads = nn.ModuleList([
+            nn.Linear(hidden_dim, codebook_size)
+            for _ in range(num_codebooks)
+        ])
+
+        # 可选：添加 transformer 层进行自回归预测
+        self.transformer = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(d_model=hidden_dim, nhead=8),
+            num_layers=2
+        )
+
+    def forward(self, code_embeddings):
+        """
+        自回归预测 D 个 codebook indices
+
+        Args:
+            code_embeddings: [B, N, hidden_dim]
+
+        Returns:
+            logits: List of [B, N, codebook_size], length = D
+        """
+        B, N, _ = code_embeddings.shape
+
+        logits_list = []
+        current_embeds = code_embeddings
+
+        for i in range(self.num_codebooks):
+            # 预测第 i 层的 codebook indices
+            logits = self.codebook_heads[i](current_embeds)  # [B, N, codebook_size]
+            logits_list.append(logits)
+
+            # 可选：使用预测结果更新 embeddings（自回归）
+            # predicted_indices = logits.argmax(dim=-1)
+            # current_embeds = self._update_embeddings(current_embeds, predicted_indices)
+
+        return logits_list
+
+    def compute_loss(self, code_embeddings, target_tokens):
+        """
+        计算视觉损失
+
+        Args:
+            code_embeddings: [B, N, hidden_dim]
+            target_tokens: [B, N, D] - D 个 codebook indices
+
+        Returns:
+            visual_loss: scalar
+        """
+        logits_list = self.forward(code_embeddings)
+
+        total_loss = 0.0
+        for i, logits in enumerate(logits_list):
+            # 计算第 i 层的交叉熵损失
+            loss = F.cross_entropy(
+                logits.reshape(-1, self.codebook_size),
+                target_tokens[:, :, i].reshape(-1)
+            )
+            total_loss += loss
+
+        return total_loss / self.num_codebooks
 ```
 
-**优点**:
-- ✅ 模型真正学习生成子目标
-- ✅ 推理时可以生成子目标
-- ✅ 架构简单，不需要双解码器
-
-**缺点**:
-- ❌ Embedding 层很大（48390 维）
-- ❌ 大部分 embeddings 不会被用到
-- ❌ 可能训练不稳定
-
-**需要验证**:
-- 是否会导致训练不稳定？
-- 是否需要特殊的初始化策略？
-- 论文是否真的这样实现？
-
----
-
-### 方案 3: 双解码器（如果方案 2 不可行）
-
-**目标**: 为图像 tokens 添加专门的解码器
+#### 步骤 2: 修改 VILA-U 模型
 
 ```python
 class VisualCoTModel(VILAULlamaModel):
     def __init__(self, config):
         super().__init__(config)
-        # 添加图像 token 解码器
-        self.image_token_head = nn.Linear(
-            config.hidden_size,
-            16384  # RQ-VAE codebook size
+
+        # 添加 Depth Transformer
+        self.depth_transformer = DepthTransformer(
+            hidden_dim=config.hidden_size,
+            num_codebooks=4,
+            codebook_size=16384
         )
 
-    def forward(self, input_ids, images, labels):
-        # 1. 获取 hidden states
-        hidden_states = self.llm.model(
-            inputs_embeds=self._prepare_inputs(input_ids, images)
-        ).last_hidden_state
+        # 标记子目标生成的位置
+        self.subgoal_token_id = config.subgoal_token_id
 
-        # 2. 子目标部分：使用 image_token_head
-        subgoal_mask = self._get_subgoal_mask(input_ids)
-        image_logits = self.image_token_head(
-            hidden_states[subgoal_mask]
-        )  # [B*1024, 16384]
+    def forward(
+        self,
+        input_ids=None,
+        images=None,
+        subgoal_images=None,  # GT 子目标图像（训练时）
+        labels=None,
+        **kwargs
+    ):
+        # 1. 处理图像输入（通过 Vision Tower + Projector）
+        if images is not None:
+            obs_features = self.vision_tower(images)
+            obs_embeds = self.mm_projector(obs_features)
 
-        visual_loss = F.cross_entropy(
-            image_logits,
-            gt_subgoal_tokens  # 范围 0-16384
+        # 2. 处理文本输入
+        text_embeds = self.get_input_embeddings()(input_ids)
+
+        # 3. 拼接输入（在 embedding 空间）
+        # 注意：这里不包含子目标，子目标是要生成的
+        full_embeds = self._concat_multimodal_embeds(obs_embeds, text_embeds)
+
+        # 4. LLM 前向传播
+        outputs = self.llm.model(inputs_embeds=full_embeds, **kwargs)
+        hidden_states = outputs.last_hidden_state
+
+        # 5. 计算损失
+        total_loss = 0.0
+
+        # 5.1 视觉损失（子目标生成）
+        if subgoal_images is not None:
+            # 找到子目标生成的位置
+            subgoal_mask = (input_ids == self.subgoal_token_id)
+            subgoal_hidden = hidden_states[subgoal_mask]  # [B*N, hidden_dim]
+
+            # 编码 GT 子目标为 RQ-VAE tokens
+            gt_subgoal_tokens = self._encode_image_to_rqvae_tokens(
+                subgoal_images
+            )  # [B, N, 4]
+
+            # 通过 Depth Transformer 计算损失
+            visual_loss = self.depth_transformer.compute_loss(
+                code_embeddings=subgoal_hidden.reshape(B, N, -1),
+                target_tokens=gt_subgoal_tokens
+            )
+            total_loss += visual_loss
+
+        # 5.2 动作损失（标准 LLM 损失）
+        if labels is not None:
+            # 只在动作部分计算损失
+            action_mask = (labels != IGNORE_INDEX)
+            action_hidden = hidden_states[action_mask]
+            action_logits = self.llm.lm_head(action_hidden)
+            action_labels = labels[action_mask]
+
+            action_loss = F.cross_entropy(action_logits, action_labels)
+            total_loss += action_loss
+
+        return CausalLMOutputWithPast(
+            loss=total_loss,
+            logits=None,  # 不返回 logits（因为有两个解码路径）
+            hidden_states=outputs.hidden_states,
         )
 
-        # 3. 动作部分：使用 lm_head
-        action_mask = self._get_action_mask(input_ids)
-        action_logits = self.llm.lm_head(
-            hidden_states[action_mask]
-        )  # [B*70, vocab_size]
+    def _encode_image_to_rqvae_tokens(self, images):
+        """
+        将图像编码为 RQ-VAE tokens
 
-        action_loss = F.cross_entropy(
-            action_logits,
-            gt_action_tokens  # 范围 0-vocab_size
+        Args:
+            images: [B, 3, H, W]
+
+        Returns:
+            tokens: [B, N, D] - N 个位置，每个位置 D 个 codebook indices
+        """
+        # 使用 VILA-U 的 RQ-VAE encoder
+        code, _ = self.vision_tower.vision_tower.rqvaesiglip.encode_image(images)
+        # code: [B, 16, 16, 4] - 4 个 codebook indices
+
+        B, H, W, D = code.shape
+        tokens = code.reshape(B, H * W, D)  # [B, 256, 4]
+
+        return tokens
+```
+
+#### 步骤 3: 修改训练脚本
+
+```python
+class VisualCoTTrainer(VILAUTrainer):
+    def compute_loss(self, model, inputs, return_outputs=False):
+        # 直接调用模型的 forward
+        # 模型内部会处理视觉损失和动作损失
+        outputs = model(
+            input_ids=inputs['input_ids'],
+            images=inputs['observation_images'],
+            subgoal_images=inputs['subgoal_images'],  # GT 子目标
+            labels=inputs['labels'],
+            attention_mask=inputs['attention_mask'],
         )
 
-        # 4. 联合损失
-        return visual_loss + action_loss
+        return (outputs.loss, outputs) if return_outputs else outputs.loss
 ```
 
 **优点**:
-- ✅ 架构清晰，各司其职
-- ✅ 不需要扩展 vocab
-- ✅ 可以真正学习生成子目标
+- ✅ 完全符合论文的实现方式
+- ✅ 模型真正学习生成子目标
+- ✅ 推理时可以生成子目标
+- ✅ 架构清晰，视觉和动作解码分离
 
 **缺点**:
+- ❌ 需要实现 Depth Transformer
 - ❌ 需要修改模型架构
-- ❌ 增加模型复杂度
-- ❌ 论文没有明确提到
+- ❌ 实现复杂度较高
+
+**关键点**:
+1. **图像输入**：通过 Vision Tower + Projector，不走 Text Embedding
+2. **图像输出**：通过 Depth Transformer，不走 lm_head
+3. **RQ-VAE tokens**：每个位置有 D=4 个 codebook indices
+4. **自回归预测**：Depth Transformer 逐层预测残差 tokens
 
 ---
 
 ## 实施建议
 
-### 阶段 1: 验证基础流程（1-2 天）
+### 阶段 1: 验证基础流程（1-2 天）⭐
 
-**目标**: 确保数据加载和基础训练可以运行
+**目标**: 实现方案 1（简化版），确保数据加载和基础训练可以运行
 
 ```bash
 # 1. 回退到 Phase 3 稳定版本
@@ -377,54 +645,132 @@ git checkout <phase3-stable-commit>
 # 2. 创建新分支
 git checkout -b phase4-v2-simple
 
-# 3. 实现方案 1（简化版）
-# - 使用 GT 子目标 embeddings
+# 3. 实现方案 1
+# - 使用 GT 子目标 embeddings（通过 Vision Tower + Projector）
 # - 只训练动作预测
 # - 验证训练流程
 ```
 
 **验收标准**:
 - [ ] 数据加载正确（观测图像、子目标图像、动作）
+- [ ] 子目标图像通过 Vision Tower + Projector 转换为 embeddings
+- [ ] Embeddings 正确拼接到 LLM 输入
 - [ ] 损失正常（不是 NaN）
 - [ ] 可以正常训练和保存 checkpoint
 - [ ] 动作预测准确率合理
 
----
+**关键代码**:
+```python
+# 不要这样做 ❌
+input_ids[subgoal_pos] = image_token_ids  # 会导致 embedding 层崩溃
 
-### 阶段 2: 联系论文作者或查找官方代码（2-3 天）
-
-**目标**: 确认论文的真实实现方式
-
-**需要确认的问题**:
-1. 是否扩展了 vocab？如果是，如何避免训练不稳定？
-2. 是否使用了双解码器？
-3. 子目标 tokens 如何通过 embedding 层？
-4. 训练时的具体损失计算方式？
-
-**信息来源**:
-- 论文作者邮箱
-- GitHub 仓库（如果有）
-- 相关论文的引用和被引用
-- 会议 presentation 或 poster
+# 应该这样做 ✅
+subgoal_embeds = mm_projector(vision_tower(subgoal_images))
+full_embeds = torch.cat([obs_embeds, text_embeds, subgoal_embeds], dim=1)
+```
 
 ---
 
-### 阶段 3: 实现完整版本（3-5 天）
+### 阶段 2: 实现 Depth Transformer（3-5 天）⭐⭐⭐
 
-**根据阶段 2 的结果选择方案**:
+**目标**: 实现方案 2（完整版），让模型学习生成子目标
 
-**如果论文使用扩展 vocab**:
-- 实现方案 2
-- 注意 embedding 初始化策略
-- 监控训练稳定性
+**步骤**:
 
-**如果论文使用其他方法**:
-- 根据官方代码实现
-- 或实现方案 3（双解码器）
+1. **实现 Depth Transformer 模块**（1-2天）
+   ```python
+   # 参考 VILA-U 的 RQ-VAE 实现
+   # 位置：vila_u/model/multimodal_encoder/rqvaesigliptransformer/
+   ```
 
-**如果无法确认**:
-- 先用方案 1 验证效果
-- 如果效果好，考虑发表时说明简化
+2. **修改 VILA-U 模型**（1-2天）
+   - 添加 `depth_transformer` 属性
+   - 修改 `forward` 方法，分离视觉和动作解码路径
+   - 实现 `_encode_image_to_rqvae_tokens` 方法
+
+3. **修改训练脚本**（1天）
+   - 简化 `compute_loss`（模型内部处理损失）
+   - 添加视觉损失和动作损失的监控
+
+4. **测试和调试**（1天）
+   - 验证 Depth Transformer 输出维度正确
+   - 验证视觉损失正常下降
+   - 验证动作损失正常下降
+
+**验收标准**:
+- [ ] Depth Transformer 正确实现
+- [ ] 视觉损失正常计算和下降
+- [ ] 动作损失正常计算和下降
+- [ ] 联合训练收敛
+- [ ] 推理时可以生成子目标图像
+
+---
+
+### 阶段 3: 优化和评估（2-3 天）
+
+**目标**: 优化性能，评估效果
+
+**任务**:
+1. 调整超参数（视觉损失权重、学习率等）
+2. 在 LIBERO 测试集上评估成功率
+3. 分析生成的子目标图像质量（PSNR、SSIM）
+4. 对比方案 1 和方案 2 的效果差异
+
+---
+
+## 关键要点总结
+
+### ✅ 正确的做法
+
+1. **图像输入**：通过 **Vision Tower + Projector**，不走 Text Embedding
+   ```python
+   image_embeds = mm_projector(vision_tower(images))
+   ```
+
+2. **图像输出**：通过 **Depth Transformer**，不走 lm_head
+   ```python
+   visual_loss = depth_transformer.compute_loss(hidden_states, gt_tokens)
+   ```
+
+3. **双解码路径**：视觉和动作分别解码
+   ```python
+   # 视觉路径
+   visual_loss = depth_transformer(hidden_states[subgoal_pos], gt_subgoal)
+
+   # 动作路径
+   action_loss = F.cross_entropy(lm_head(hidden_states[action_pos]), gt_action)
+   ```
+
+4. **RQ-VAE tokens**：每个位置有 D=4 个 codebook indices
+   ```python
+   gt_tokens = encode_image_to_rqvae(images)  # [B, N, 4]
+   ```
+
+### ❌ 错误的做法
+
+1. **不要将图像 token IDs 放入 input_ids**
+   ```python
+   # ❌ 错误
+   input_ids[subgoal_pos] = image_token_ids
+   ```
+
+2. **不要扩展 vocab 来容纳图像 tokens**
+   ```python
+   # ❌ 错误
+   model.resize_token_embeddings(vocab_size + 16384)
+   ```
+
+3. **不要用 lm_head 预测图像 tokens**
+   ```python
+   # ❌ 错误
+   image_logits = lm_head(hidden_states)  # 维度不匹配
+   ```
+
+4. **不要忽略 Depth Transformer**
+   ```python
+   # ❌ 错误：用简单的 Linear 层代替
+   self.image_head = nn.Linear(hidden_dim, 16384)
+   ```
 
 ---
 
