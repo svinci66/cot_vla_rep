@@ -917,9 +917,280 @@ class VisualCoTTrainer(VILAUTrainer):
 
 ---
 
-## 实施建议
+## ⚠️ 关键工程细节（避坑指南）
 
-### 阶段 1: 验证基础流程（1-2 天）⭐
+### 1. 子目标 Placeholder 的数量问题
+
+**错误做法** ❌：
+```python
+# 只放 1 个 <subgoal> token
+input_ids = [text_tokens, <subgoal>, action_tokens]
+
+# 问题：LLM 只会输出 1 个位置的 hidden state
+subgoal_mask = (input_ids == self.subgoal_token_id)  # 只有 1 个 True
+subgoal_hidden = hidden_states[subgoal_mask]  # [B, 1, hidden_dim] ❌
+```
+
+**正确做法** ✅：
+```python
+# 放 256 个 <subgoal> tokens（对应 16x16 的图像位置）
+num_subgoal_positions = 16 * 16  # 256
+subgoal_tokens = [self.subgoal_token_id] * num_subgoal_positions
+
+input_ids = [text_tokens, subgoal_tokens, action_tokens]
+
+# LLM 会输出 256 个位置的 hidden states
+subgoal_mask = (input_ids == self.subgoal_token_id)  # 256 个 True
+subgoal_hidden = hidden_states[subgoal_mask]  # [B, 256, hidden_dim] ✅
+
+# Depth Transformer 可以预测 256 个位置的图像 tokens
+visual_loss = self.depth_transformer.compute_loss(
+    code_embeddings=subgoal_hidden.reshape(B, 256, -1),
+    target_tokens=gt_subgoal_tokens  # [B, 256, 4]
+)
+```
+
+**关键点**：
+- VILA-U 的 RQ-VAE 将 256x256 图像编码为 16x16=256 个位置
+- 每个位置需要 1 个 placeholder token
+- 总共需要 **256 个 `<subgoal>` tokens**
+
+---
+
+### 2. 训练与推理的差异
+
+#### 训练阶段（Teacher Forcing）
+
+**一次性并行处理**：
+```python
+def forward(self, input_ids, images, subgoal_images, labels):
+    # 1. 拼接所有输入（一次性）
+    full_embeds = torch.cat([
+        obs_embeds,           # 观测图像
+        text_embeds,          # 文本指令
+        gt_subgoal_embeds,    # GT 子目标（256 个位置）
+        action_embeds         # 动作 tokens（70 个）
+    ], dim=1)
+
+    # 2. 一次前向传播
+    outputs = self.llm.model(inputs_embeds=full_embeds)
+
+    # 3. 并行计算两个损失
+    visual_loss = self.depth_transformer.compute_loss(...)
+    action_loss = F.cross_entropy(...)
+
+    return visual_loss + action_loss
+```
+
+**优点**：
+- ✅ 训练高效（并行处理）
+- ✅ 使用 GT 子目标（Teacher Forcing）
+
+---
+
+#### 推理阶段（Autoregressive Generation）
+
+**两阶段串行生成**（论文 Algorithm 1）：
+
+```python
+@torch.no_grad()
+def generate_with_visual_cot(
+    self,
+    observation: torch.Tensor,
+    instruction: str,
+    max_new_tokens: int = 256 + 70,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    两阶段生成：
+    1. 生成子目标图像 tokens（256 个）
+    2. 基于子目标生成动作 tokens（70 个）
+    """
+
+    # ========== 阶段 1: 生成子目标 ==========
+
+    # 1.1 准备输入
+    obs_embeds = self.mm_projector(self.vision_tower(observation))
+    text_embeds = self.get_input_embeddings()(self.tokenize(instruction))
+
+    # 1.2 添加 256 个 <subgoal> placeholders
+    subgoal_token_ids = torch.full(
+        (1, 256),
+        self.subgoal_token_id,
+        device=self.device
+    )
+    subgoal_embeds = self.get_input_embeddings()(subgoal_token_ids)
+
+    # 1.3 拼接输入（不包含动作）
+    input_embeds_stage1 = torch.cat([
+        obs_embeds,
+        text_embeds,
+        subgoal_embeds  # 256 个 placeholders
+    ], dim=1)
+
+    # 1.4 LLM 前向传播
+    outputs_stage1 = self.llm.model(inputs_embeds=input_embeds_stage1)
+    hidden_states_stage1 = outputs_stage1.last_hidden_state
+
+    # 1.5 提取子目标位置的 hidden states
+    subgoal_hidden = hidden_states_stage1[:, -256:, :]  # [1, 256, hidden_dim]
+
+    # 1.6 使用 Depth Transformer 生成图像 tokens
+    generated_subgoal_tokens = self.depth_transformer.generate(
+        code_embeddings=subgoal_hidden
+    )  # [1, 256, 4] - 4 个 codebook indices
+
+    # 1.7 解码为图像
+    generated_subgoal_image = self._decode_rqvae_tokens_to_image(
+        generated_subgoal_tokens
+    )  # [1, 3, 256, 256]
+
+    # ========== 阶段 2: 生成动作 ==========
+
+    # 2.1 将生成的子目标图像编码为 embeddings
+    generated_subgoal_features = self.vision_tower(generated_subgoal_image)
+    generated_subgoal_embeds = self.mm_projector(generated_subgoal_features)
+
+    # 2.2 添加 <act> token
+    act_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_ACT_TOKEN)
+    act_embeds = self.get_input_embeddings()(
+        torch.tensor([[act_token_id]], device=self.device)
+    )
+
+    # 2.3 拼接输入（包含生成的子目标）
+    input_embeds_stage2 = torch.cat([
+        obs_embeds,
+        text_embeds,
+        generated_subgoal_embeds,  # 使用生成的子目标
+        act_embeds
+    ], dim=1)
+
+    # 2.4 自回归生成 70 个动作 tokens
+    action_token_ids = self._generate_action_tokens(
+        input_embeds=input_embeds_stage2,
+        max_new_tokens=70
+    )  # [1, 70]
+
+    # 2.5 解码为动作
+    actions = self._decode_action_tokens(action_token_ids)  # [10, 7]
+
+    return actions, generated_subgoal_image
+
+
+def _generate_action_tokens(
+    self,
+    input_embeds: torch.Tensor,
+    max_new_tokens: int = 70
+) -> torch.Tensor:
+    """
+    自回归生成动作 tokens（使用 lm_head）
+    """
+    generated_ids = []
+
+    for _ in range(max_new_tokens):
+        # 前向传播
+        outputs = self.llm.model(inputs_embeds=input_embeds)
+        hidden_states = outputs.last_hidden_state
+
+        # 使用 lm_head 预测下一个 token
+        next_token_logits = self.llm.lm_head(hidden_states[:, -1, :])
+        next_token_id = next_token_logits.argmax(dim=-1)
+
+        generated_ids.append(next_token_id)
+
+        # 更新输入（拼接新生成的 token）
+        next_token_embed = self.get_input_embeddings()(next_token_id.unsqueeze(1))
+        input_embeds = torch.cat([input_embeds, next_token_embed], dim=1)
+
+    return torch.stack(generated_ids, dim=1)
+```
+
+**关键点**：
+1. **阶段 1**：生成 256 个子目标 tokens（使用 Depth Transformer）
+2. **阶段 2**：基于生成的子目标，生成 70 个动作 tokens（使用 lm_head）
+3. **串行执行**：必须先完成阶段 1，再执行阶段 2
+4. **自回归**：动作生成是逐个 token 生成的
+
+---
+
+### 3. 序列长度计算
+
+**训练时的序列长度**：
+```python
+# 假设：
+# - 观测图像：256 个 vision tokens
+# - 文本指令：~50 个 text tokens
+# - 子目标：256 个 <subgoal> tokens
+# - <act> token：1 个
+# - 动作：70 个 action tokens
+
+total_length = 256 + 50 + 256 + 1 + 70 = 633 tokens
+
+# 需要设置足够大的 model_max_length
+# 建议：1024 或 1536
+```
+
+**推理时的序列长度**：
+```python
+# 阶段 1（生成子目标）
+stage1_length = 256 + 50 + 256 = 562 tokens
+
+# 阶段 2（生成动作）
+stage2_length = 256 + 50 + 256 + 1 + 70 = 633 tokens
+```
+
+---
+
+### 4. Data Collator 的正确实现
+
+```python
+class VisualCoTDataCollator:
+    def __call__(self, batch):
+        # 1. 构建输入序列
+        for item in batch:
+            # 文本部分
+            text_tokens = self.tokenizer(item['instruction'])
+
+            # 子目标部分：256 个 <subgoal> tokens
+            subgoal_tokens = [self.subgoal_token_id] * 256
+
+            # <act> token
+            act_token = [self.act_token_id]
+
+            # 动作部分：70 个 action tokens
+            action_tokens = self._encode_actions(item['actions'])  # [70]
+
+            # 拼接完整序列
+            input_ids = torch.cat([
+                text_tokens,
+                torch.tensor(subgoal_tokens),
+                torch.tensor(act_token),
+                action_tokens
+            ])
+
+            # 2. 构建 labels
+            labels = torch.full_like(input_ids, IGNORE_INDEX)
+
+            # 子目标部分：保持 IGNORE_INDEX（视觉损失由 Depth Transformer 计算）
+            # labels[text_len:text_len+256] = IGNORE_INDEX
+
+            # 动作部分：设置为 GT action tokens
+            labels[-70:] = action_tokens
+
+        return {
+            'input_ids': input_ids,
+            'labels': labels,
+            'observation_images': obs_images,
+            'subgoal_images': subgoal_images,  # GT 子目标
+        }
+```
+
+**关键点**：
+- 子目标部分的 labels 保持 `IGNORE_INDEX`
+- 视觉损失由 Depth Transformer 单独计算
+- 动作部分的 labels 设置为 GT tokens
+- 动作损失由 lm_head 计算
+
+---
 
 **目标**: 实现方案 1（简化版），确保数据加载和基础训练可以运行
 
