@@ -42,8 +42,6 @@ def evaluate_offline(
     print("\n[1/3] Loading model...")
     tokenizer, model, image_processor, context_len = load_pretrained_model(
         model_path=model_path,
-        model_base=None,
-        model_name="vila-u",
         device=device,
     )
 
