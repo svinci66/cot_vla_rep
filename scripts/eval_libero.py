@@ -77,10 +77,15 @@ def evaluate_on_libero(
 
         print(f"  ✓ Environment created")
 
-    except ImportError:
+    except ImportError as e:
         print("  ✗ LIBERO not installed. Please install LIBERO first.")
         print("    git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git")
         print("    cd LIBERO && pip install -e .")
+        return
+    except Exception as e:
+        print(f"  ✗ Error loading LIBERO environment: {e}")
+        import traceback
+        traceback.print_exc()
         return
 
     # 2. 加载模型
