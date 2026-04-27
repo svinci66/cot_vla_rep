@@ -288,10 +288,8 @@ class VisualCoTTrainer(VILAUTrainer):
             if subgoal_end <= input_ids.shape[1]:
                 # 替换 input_ids 中的占位符为 GT tokens
                 input_ids[i, subgoal_start:subgoal_end] = gt_subgoal_token_ids[i]
-                # 更新 labels：子目标部分应该预测 GT tokens
-                # 注意：labels 是 shifted，所以 labels[i] 对应预测 input_ids[i+1]
-                # 但在 HuggingFace 的实现中，shifting 是自动的
-                labels[i, subgoal_start:subgoal_end] = gt_subgoal_token_ids[i]
+                # 子目标部分的 labels 保持 IGNORE_INDEX，因为它们是图像 tokens，不参与语言模型损失
+                # labels[i, subgoal_start:subgoal_end] = gt_subgoal_token_ids[i]  # 注释掉
 
         # 3. 前向传播计算损失
         # 简化方案：直接使用模型的标准前向传播，让它自己处理图像
