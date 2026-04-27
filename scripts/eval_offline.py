@@ -46,11 +46,27 @@ def evaluate_offline(
     )
 
     # 加载动作预测头
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    if 'model' in checkpoint:
-        model.load_state_dict(checkpoint['model'], strict=False)
+    import os
+    if os.path.isdir(checkpoint_path):
+        # 如果是目录，从子目录加载模型组件
+        print(f"  Loading from checkpoint directory: {checkpoint_path}")
+        if os.path.exists(os.path.join(checkpoint_path, 'llm')):
+            model.get_llm().load_state_dict(
+                torch.load(os.path.join(checkpoint_path, 'llm', 'pytorch_model.bin'), map_location=device),
+                strict=False
+            )
+        if os.path.exists(os.path.join(checkpoint_path, 'mm_projector')):
+            model.get_mm_projector().load_state_dict(
+                torch.load(os.path.join(checkpoint_path, 'mm_projector', 'pytorch_model.bin'), map_location=device),
+                strict=False
+            )
     else:
-        model.load_state_dict(checkpoint, strict=False)
+        # 如果是文件，直接加载
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        if 'model' in checkpoint:
+            model.load_state_dict(checkpoint['model'], strict=False)
+        else:
+            model.load_state_dict(checkpoint, strict=False)
 
     model.eval()
     print(f"  ✓ Model loaded from {model_path}")
