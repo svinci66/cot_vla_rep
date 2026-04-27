@@ -47,17 +47,25 @@ def evaluate_offline(
 
     # 加载动作预测头
     import os
+    from transformers import AutoModelForCausalLM
+
     if os.path.isdir(checkpoint_path):
         # 如果是目录，从子目录加载模型组件
         print(f"  Loading from checkpoint directory: {checkpoint_path}")
-        if os.path.exists(os.path.join(checkpoint_path, 'llm')):
-            model.get_llm().load_state_dict(
-                torch.load(os.path.join(checkpoint_path, 'llm', 'pytorch_model.bin'), map_location=device),
-                strict=False
-            )
-        if os.path.exists(os.path.join(checkpoint_path, 'mm_projector')):
+
+        # 加载LLM（支持分片模型）
+        llm_path = os.path.join(checkpoint_path, 'llm')
+        if os.path.exists(llm_path):
+            print(f"  Loading LLM from {llm_path}")
+            llm_state = AutoModelForCausalLM.from_pretrained(llm_path, torch_dtype=torch.bfloat16).state_dict()
+            model.get_llm().load_state_dict(llm_state, strict=False)
+
+        # 加载mm_projector
+        mm_proj_path = os.path.join(checkpoint_path, 'mm_projector', 'pytorch_model.bin')
+        if os.path.exists(mm_proj_path):
+            print(f"  Loading mm_projector from {mm_proj_path}")
             model.get_mm_projector().load_state_dict(
-                torch.load(os.path.join(checkpoint_path, 'mm_projector', 'pytorch_model.bin'), map_location=device),
+                torch.load(mm_proj_path, map_location=device),
                 strict=False
             )
     else:
