@@ -83,10 +83,9 @@ def evaluate_offline(
     # 2. 加载测试集
     print("\n[2/3] Loading test dataset...")
     dataset = LiberoGoalDataset(
-        data_path=data_path,
-        tokenizer=tokenizer,
-        image_processor=image_processor,
-        split="test",  # 使用测试集
+        data_root=data_path,
+        image_size=256,
+        action_chunk_size=10,
     )
 
     if num_samples is not None:
