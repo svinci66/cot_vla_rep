@@ -9,7 +9,7 @@ import pathlib
 import torch
 import transformers
 
-from typing import Dict, Tuple, cast
+from typing import Dict, Optional, Tuple, cast
 from dataclasses import dataclass, field
 from torch.nn.utils.rnn import pad_sequence
 
@@ -91,6 +91,22 @@ class ActionPredictionArguments:
         default=True,
         metadata={"help": "Use full attention inside the action token block"}
     )
+    use_visual_cot: bool = field(
+        default=False,
+        metadata={"help": "Return a future video frame as subgoal image for Phase 4 Visual CoT"}
+    )
+    subgoal_min_offset: int = field(
+        default=1,
+        metadata={"help": "Minimum future-frame offset when sampling Phase 4 subgoal images"}
+    )
+    subgoal_max_offset: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum future-frame offset when sampling Phase 4 subgoal images; defaults to action_chunk_size"}
+    )
+    subgoal_sampling_strategy: str = field(
+        default="uniform",
+        metadata={"help": "Subgoal frame sampling strategy: uniform or fixed"}
+    )
 
 
 class ActionPredictionDataCollator:
@@ -123,12 +139,19 @@ class ActionPredictionDataCollator:
         input_ids = input_ids[:, : self.model_max_length]
         attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
 
-        return {
+        output = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "images": images,
             "action_labels": action_labels,
         }
+        if "subgoal_images" in batch[0]:
+            output["subgoal_images"] = torch.stack([item["subgoal_images"] for item in batch])
+            output["subgoal_timesteps"] = torch.tensor(
+                [item["subgoal_timestep"] for item in batch],
+                dtype=torch.long,
+            )
+        return output
 
 
 class DiscreteActionPredictionDataCollator:
@@ -202,12 +225,19 @@ class DiscreteActionPredictionDataCollator:
         )
         attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
 
-        return {
+        output = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "images": images,
             "labels": labels,
         }
+        if "subgoal_images" in batch[0]:
+            output["subgoal_images"] = torch.stack([item["subgoal_images"] for item in batch])
+            output["subgoal_timesteps"] = torch.tensor(
+                [item["subgoal_timestep"] for item in batch],
+                dtype=torch.long,
+            )
+        return output
 
 
 class ActionPredictionTrainer(VILAUTrainer):
@@ -233,9 +263,30 @@ class ActionPredictionTrainer(VILAUTrainer):
                     labels=inputs["labels"],
                     images=inputs["images"],
                 )
+                action_token_count = (
+                    core_model.config.action_chunk_size * core_model.config.action_dim
+                )
+                if inputs.get("subgoal_images") is not None:
+                    subgoal_embeds, _ = core_model.encode_images(
+                        inputs["subgoal_images"],
+                        image_ids=None,
+                    )
+                    (
+                        inputs_embeds,
+                        mm_labels,
+                        mm_attention_mask,
+                        position_ids,
+                    ) = insert_subgoal_embeds_before_action_block(
+                        inputs_embeds=inputs_embeds,
+                        labels=mm_labels,
+                        attention_mask=mm_attention_mask,
+                        position_ids=position_ids,
+                        subgoal_embeds=subgoal_embeds,
+                        num_action_tokens=action_token_count,
+                    )
                 hybrid_attention_mask = build_hybrid_attention_mask(
                     mm_attention_mask,
-                    num_action_tokens=core_model.config.action_chunk_size * core_model.config.action_dim,
+                    num_action_tokens=action_token_count,
                     dtype=inputs_embeds.dtype,
                 )
                 outputs = core_model.llm.model(
@@ -251,9 +302,6 @@ class ActionPredictionTrainer(VILAUTrainer):
                     seqlens_in_batch=None,
                 )
                 labels = mm_labels[:, :, 0]
-                action_token_count = (
-                    core_model.config.action_chunk_size * core_model.config.action_dim
-                )
                 action_position_mask = build_action_token_position_mask(
                     mm_attention_mask,
                     num_action_tokens=action_token_count,
@@ -382,6 +430,96 @@ def smart_tokenizer_and_embedding_resize(
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
 
+def insert_subgoal_embeds_before_action_block(
+    inputs_embeds: torch.Tensor,
+    labels: torch.Tensor,
+    attention_mask: torch.Tensor,
+    position_ids: torch.Tensor | None,
+    subgoal_embeds: torch.Tensor,
+    num_action_tokens: int,
+    ignore_index: int = IGNORE_INDEX,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Insert GT subgoal image embeddings immediately before action slots."""
+    batch_size, _, hidden_size = inputs_embeds.shape
+    subgoal_len = subgoal_embeds.shape[1]
+    label_depth = labels.shape[-1]
+
+    new_embeds = []
+    new_labels = []
+    for batch_idx in range(batch_size):
+        valid_mask = attention_mask[batch_idx].bool()
+        cur_valid_embeds = inputs_embeds[batch_idx][valid_mask]
+        cur_valid_labels = labels[batch_idx][valid_mask]
+        valid_len = cur_valid_embeds.shape[0]
+        action_start = valid_len - num_action_tokens
+        if action_start < 0:
+            raise ValueError(
+                f"Cannot insert subgoal before action block: valid_len={valid_len}, "
+                f"num_action_tokens={num_action_tokens}"
+            )
+
+        cur_embeds = torch.cat(
+            [
+                cur_valid_embeds[:action_start],
+                subgoal_embeds[batch_idx],
+                cur_valid_embeds[action_start:],
+            ],
+            dim=0,
+        )
+        cur_subgoal_labels = torch.full(
+            (subgoal_len, label_depth),
+            ignore_index,
+            dtype=labels.dtype,
+            device=labels.device,
+        )
+        cur_labels = torch.cat(
+            [
+                cur_valid_labels[:action_start],
+                cur_subgoal_labels,
+                cur_valid_labels[action_start:],
+            ],
+            dim=0,
+        )
+        new_embeds.append(cur_embeds)
+        new_labels.append(cur_labels)
+
+    max_len = max(embed.shape[0] for embed in new_embeds)
+    padded_embeds = inputs_embeds.new_zeros((batch_size, max_len, hidden_size))
+    padded_labels = torch.full(
+        (batch_size, max_len, label_depth),
+        ignore_index,
+        dtype=labels.dtype,
+        device=labels.device,
+    )
+    padded_attention_mask = torch.zeros(
+        (batch_size, max_len),
+        dtype=attention_mask.dtype,
+        device=attention_mask.device,
+    )
+    padded_position_ids = None
+    if position_ids is not None:
+        padded_position_ids = torch.zeros(
+            (batch_size, max_len),
+            dtype=position_ids.dtype,
+            device=position_ids.device,
+        )
+
+    for batch_idx, (cur_embeds, cur_labels) in enumerate(zip(new_embeds, new_labels)):
+        cur_len = cur_embeds.shape[0]
+        padded_embeds[batch_idx, :cur_len] = cur_embeds
+        padded_labels[batch_idx, :cur_len] = cur_labels
+        padded_attention_mask[batch_idx, :cur_len] = True
+        if padded_position_ids is not None:
+            padded_position_ids[batch_idx, :cur_len] = torch.arange(
+                0,
+                cur_len,
+                dtype=padded_position_ids.dtype,
+                device=padded_position_ids.device,
+            )
+
+    return padded_embeds, padded_labels, padded_attention_mask, padded_position_ids
+
+
 def make_action_prediction_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args: ActionPredictionArguments,
@@ -402,6 +540,10 @@ def make_action_prediction_data_module(
         image_size=data_args.image_size,
         remove_pause_intervals=data_args.remove_pause_intervals,
         pause_threshold=data_args.pause_threshold,
+        include_subgoal_image=data_args.use_visual_cot,
+        subgoal_min_offset=data_args.subgoal_min_offset,
+        subgoal_max_offset=data_args.subgoal_max_offset,
+        subgoal_sampling_strategy=data_args.subgoal_sampling_strategy,
     )
     training_args.sample_lens = [len(train_dataset)]
 
@@ -482,10 +624,19 @@ def train():
 
     prepare_config_for_training(config, model_args, training_args, data_args)
 
+    if action_args.use_visual_cot and not action_args.use_discrete_action_prediction:
+        raise ValueError("Phase 4 Visual CoT currently requires discrete action prediction")
+    if action_args.use_visual_cot and not action_args.use_hybrid_attention:
+        raise ValueError("Phase 4 Visual CoT requires hybrid attention for action slots")
+
     # Enable action prediction
     config.use_discrete_action_prediction = action_args.use_discrete_action_prediction
     config.use_action_prediction = not action_args.use_discrete_action_prediction
     config.use_hybrid_attention = action_args.use_hybrid_attention
+    config.use_visual_cot = action_args.use_visual_cot
+    config.subgoal_min_offset = action_args.subgoal_min_offset
+    config.subgoal_max_offset = action_args.subgoal_max_offset
+    config.subgoal_sampling_strategy = action_args.subgoal_sampling_strategy
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
     config.action_num_bins = ACTION_NUM_BINS

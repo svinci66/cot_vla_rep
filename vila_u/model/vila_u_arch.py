@@ -796,6 +796,7 @@ class VILAUMetaForCausalLM(ABC):
         image: torch.Tensor,
         instruction: str,
         image_processor=None,
+        subgoal_image=None,
     ) -> torch.Tensor:
         """
         从单个观察图像和语言指令预测动作序列（推理接口）。
@@ -804,6 +805,8 @@ class VILAUMetaForCausalLM(ABC):
             image: 输入图像 [3, H, W] 或 [H, W, 3] 或 PIL.Image 或 numpy array
             instruction: 语言指令字符串
             image_processor: 图像预处理器（可选）
+            subgoal_image: 可选 GT 子目标图像。提供时使用 oracle Visual CoT 简化版：
+                将子目标图像编码成视觉 embeddings 并插入 action slots 前。
 
         Returns:
             actions: [ACTION_CHUNK_SIZE, ACTION_DIM] 预测的动作序列
@@ -811,6 +814,10 @@ class VILAUMetaForCausalLM(ABC):
         if not hasattr(self, 'action_head'):
             if not getattr(self.config, "use_discrete_action_prediction", False):
                 raise RuntimeError("Action head not initialized. Set use_action_prediction=True in config.")
+        if subgoal_image is not None and not getattr(self.config, "use_discrete_action_prediction", False):
+            raise RuntimeError("Oracle subgoal inference requires discrete action prediction.")
+        if subgoal_image is not None and not getattr(self.config, "use_hybrid_attention", False):
+            raise RuntimeError("Oracle subgoal inference requires hybrid attention.")
 
         self.eval()
 
@@ -844,6 +851,25 @@ class VILAUMetaForCausalLM(ABC):
         # 移动到模型设备
         device = next(self.parameters()).device
         image_tensor = image_tensor.to(device, dtype=self.dtype)
+
+        subgoal_image_tensor = None
+        if subgoal_image is not None:
+            if isinstance(subgoal_image, np.ndarray):
+                subgoal_image = Image.fromarray(subgoal_image.astype(np.uint8))
+            elif isinstance(subgoal_image, torch.Tensor):
+                if subgoal_image.dim() == 3:
+                    if subgoal_image.shape[0] == 3:
+                        subgoal_image = subgoal_image.permute(1, 2, 0)
+                    subgoal_image = subgoal_image.cpu().numpy()
+                    if subgoal_image.max() <= 1.0:
+                        subgoal_image = (subgoal_image * 255).astype(np.uint8)
+                    else:
+                        subgoal_image = subgoal_image.astype(np.uint8)
+                    subgoal_image = Image.fromarray(subgoal_image)
+            subgoal_image_tensor = image_processor.preprocess(
+                subgoal_image,
+                return_tensors='pt',
+            )['pixel_values'].to(device, dtype=self.dtype)
 
         # 2. 构建输入文本（添加图像占位符）
         from vila_u.constants import DEFAULT_IMAGE_TOKEN
@@ -896,6 +922,39 @@ class VILAUMetaForCausalLM(ABC):
                     labels=None,
                     images=image_tensor,
                 )
+                if subgoal_image_tensor is not None:
+                    subgoal_embeds, _ = self.encode_images(
+                        subgoal_image_tensor,
+                        image_ids=None,
+                    )
+                    valid_len = int(mm_attention_mask[0].long().sum().item())
+                    action_start = valid_len - num_action_tokens
+                    if action_start < 0:
+                        raise RuntimeError(
+                            f"Invalid action block: valid_len={valid_len}, "
+                            f"num_action_tokens={num_action_tokens}"
+                        )
+                    inputs_embeds = torch.cat(
+                        [
+                            inputs_embeds[:, :action_start],
+                            subgoal_embeds,
+                            inputs_embeds[:, action_start:valid_len],
+                        ],
+                        dim=1,
+                    )
+                    seq_len = inputs_embeds.shape[1]
+                    mm_attention_mask = torch.ones(
+                        (1, seq_len),
+                        dtype=mm_attention_mask.dtype,
+                        device=mm_attention_mask.device,
+                    )
+                    if position_ids is not None:
+                        position_ids = torch.arange(
+                            0,
+                            seq_len,
+                            dtype=position_ids.dtype,
+                            device=position_ids.device,
+                        ).unsqueeze(0)
                 hybrid_attention_mask = build_hybrid_attention_mask(
                     mm_attention_mask,
                     num_action_tokens=num_action_tokens,

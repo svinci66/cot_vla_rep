@@ -37,6 +37,10 @@ class LiberoGoalDataset(Dataset):
         image_size: int = 256,
         remove_pause_intervals: bool = True,
         pause_threshold: float = 0.01,
+        include_subgoal_image: bool = False,
+        subgoal_min_offset: int = 1,
+        subgoal_max_offset: Optional[int] = None,
+        subgoal_sampling_strategy: str = "uniform",
     ):
         """
         Args:
@@ -47,6 +51,10 @@ class LiberoGoalDataset(Dataset):
             image_size: Target image size (will be 256x256)
             remove_pause_intervals: Whether to remove pause intervals
             pause_threshold: Threshold for detecting pause (L2 norm of action)
+            include_subgoal_image: Whether to return a future frame as subgoal image
+            subgoal_min_offset: Minimum future-frame offset for subgoal sampling
+            subgoal_max_offset: Maximum future-frame offset for subgoal sampling. Defaults to action_chunk_size
+            subgoal_sampling_strategy: "uniform" samples a random offset, "fixed" uses subgoal_max_offset
         """
         self.data_root = data_root
         self.image_processor = image_processor
@@ -55,6 +63,18 @@ class LiberoGoalDataset(Dataset):
         self.image_size = image_size
         self.remove_pause_intervals = remove_pause_intervals
         self.pause_threshold = pause_threshold
+        self.include_subgoal_image = include_subgoal_image
+        self.subgoal_min_offset = max(1, int(subgoal_min_offset))
+        self.subgoal_max_offset = int(subgoal_max_offset or action_chunk_size)
+        if self.subgoal_max_offset < self.subgoal_min_offset:
+            raise ValueError(
+                "subgoal_max_offset must be greater than or equal to subgoal_min_offset"
+            )
+        if subgoal_sampling_strategy not in {"uniform", "fixed"}:
+            raise ValueError(
+                "subgoal_sampling_strategy must be either 'uniform' or 'fixed'"
+            )
+        self.subgoal_sampling_strategy = subgoal_sampling_strategy
 
         # Build dataset index
         self.samples = self._build_index()
@@ -62,6 +82,12 @@ class LiberoGoalDataset(Dataset):
         print(f"[LiberoGoalDataset] Loaded {len(self.samples)} samples from {data_root}")
         if remove_pause_intervals:
             print(f"  - Pause removal enabled (threshold={pause_threshold})")
+        if include_subgoal_image:
+            print(
+                "  - Future-frame subgoals enabled "
+                f"(offset={self.subgoal_min_offset}-{self.subgoal_max_offset}, "
+                f"strategy={self.subgoal_sampling_strategy})"
+            )
 
     def _is_pause(self, action: np.ndarray) -> bool:
         """
@@ -122,6 +148,7 @@ class LiberoGoalDataset(Dataset):
 
                     # Load all actions for this demo
                     all_actions = demo['actions'][:]  # [T, 7]
+                    num_frames = len(all_actions)
 
                     if self.remove_pause_intervals:
                         # Remove pauses
@@ -149,12 +176,31 @@ class LiberoGoalDataset(Dataset):
                             'filtered_timestep': filtered_t,
                             'instruction': instruction,
                             'non_pause_indices': non_pause_indices,
+                            'num_frames': num_frames,
                         })
 
         return samples
 
     def __len__(self):
         return len(self.samples)
+
+    def _preprocess_rgb(self, rgb: np.ndarray) -> torch.Tensor:
+        image = Image.fromarray(rgb.astype(np.uint8))
+        return self.image_processor.preprocess(
+            image,
+            return_tensors='pt',
+            do_resize=True,
+            size={'height': self.image_size, 'width': self.image_size},
+        )['pixel_values'].squeeze(0)
+
+    def _sample_subgoal_timestep(self, sample) -> int:
+        if self.subgoal_sampling_strategy == "fixed":
+            offset = self.subgoal_max_offset
+        else:
+            offset = int(np.random.randint(self.subgoal_min_offset, self.subgoal_max_offset + 1))
+
+        final_timestep = max(0, sample['num_frames'] - 1)
+        return min(sample['timestep'] + offset, final_timestep)
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
@@ -165,18 +211,14 @@ class LiberoGoalDataset(Dataset):
             # Load observation image at original timestep
             t = sample['timestep']
             obs_rgb = demo['obs/agentview_rgb'][t]  # [H, W, 3]
+            obs_tensor = self._preprocess_rgb(obs_rgb)  # [3, 256, 256]
 
-            # Convert to PIL Image
-            obs_image = Image.fromarray(obs_rgb.astype(np.uint8))
-
-            # Resize to 256x256 and preprocess using VILA-U's image_processor
-            # The image_processor will handle normalization
-            obs_tensor = self.image_processor.preprocess(
-                obs_image,
-                return_tensors='pt',
-                do_resize=True,
-                size={'height': self.image_size, 'width': self.image_size},
-            )['pixel_values'].squeeze(0)  # [3, 256, 256]
+            subgoal_tensor = None
+            subgoal_timestep = None
+            if self.include_subgoal_image:
+                subgoal_timestep = self._sample_subgoal_timestep(sample)
+                subgoal_rgb = demo['obs/agentview_rgb'][subgoal_timestep]
+                subgoal_tensor = self._preprocess_rgb(subgoal_rgb)  # [3, 256, 256]
 
             # Load action sequence
             if self.remove_pause_intervals:
@@ -198,11 +240,15 @@ class LiberoGoalDataset(Dataset):
             actions = np.clip(actions, -1.0, 1.0)
             action_tensor = torch.from_numpy(actions).float()
 
-        return {
+        item = {
             'observations': obs_tensor,  # [3, 256, 256]
             'instructions': sample['instruction'],  # str
             'action_labels': action_tensor,  # [chunk_size, 7]
         }
+        if self.include_subgoal_image:
+            item['subgoal_images'] = subgoal_tensor
+            item['subgoal_timestep'] = subgoal_timestep
+        return item
 
 
 def collate_fn(batch):
@@ -218,11 +264,18 @@ def collate_fn(batch):
     instructions = [item['instructions'] for item in batch]
     action_labels = torch.stack([item['action_labels'] for item in batch])
 
-    return {
+    output = {
         'observations': observations,  # [B, 3, 256, 256]
         'instructions': instructions,  # List[str] of length B
         'action_labels': action_labels,  # [B, chunk_size, 7]
     }
+    if 'subgoal_images' in batch[0]:
+        output['subgoal_images'] = torch.stack([item['subgoal_images'] for item in batch])
+        output['subgoal_timesteps'] = torch.tensor(
+            [item['subgoal_timestep'] for item in batch],
+            dtype=torch.long,
+        )
+    return output
 
 
 def compute_dataset_statistics(data_root: str):

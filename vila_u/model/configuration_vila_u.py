@@ -46,3 +46,7 @@ class VILAUConfig(PretrainedConfig):
         self.action_token_ids = kwargs.pop("action_token_ids", None)
         self.action_slot_token_id = kwargs.pop("action_slot_token_id", None)
         self.use_hybrid_attention = kwargs.pop("use_hybrid_attention", False)
+        self.use_visual_cot = kwargs.pop("use_visual_cot", False)
+        self.subgoal_min_offset = kwargs.pop("subgoal_min_offset", 1)
+        self.subgoal_max_offset = kwargs.pop("subgoal_max_offset", None)
+        self.subgoal_sampling_strategy = kwargs.pop("subgoal_sampling_strategy", "uniform")

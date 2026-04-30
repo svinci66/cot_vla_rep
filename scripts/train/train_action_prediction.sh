@@ -36,6 +36,10 @@ ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-eager}
 LOW_CPU_MEM_USAGE=${LOW_CPU_MEM_USAGE:-True}
 USE_DEEPSPEED=${USE_DEEPSPEED:-False}
 USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
+USE_VISUAL_COT=${USE_VISUAL_COT:-False}
+SUBGOAL_MIN_OFFSET=${SUBGOAL_MIN_OFFSET:-1}
+SUBGOAL_MAX_OFFSET=${SUBGOAL_MAX_OFFSET:-$ACTION_CHUNK_SIZE}
+SUBGOAL_SAMPLING_STRATEGY=${SUBGOAL_SAMPLING_STRATEGY:-uniform}
 SYNC_TRANSFORMERS_PATCH=${SYNC_TRANSFORMERS_PATCH:-True}
 RESUME_TRAINING=${RESUME_TRAINING:-False}
 AUTO_NEW_OUTPUT_DIR=${AUTO_NEW_OUTPUT_DIR:-True}
@@ -49,6 +53,12 @@ if [ "$USE_HYBRID_ATTENTION" = "True" ] || [ "$USE_HYBRID_ATTENTION" = "true" ];
     ATTN_IMPLEMENTATION=eager
 else
     USE_HYBRID_ATTENTION=False
+fi
+
+if [ "$USE_VISUAL_COT" = "True" ] || [ "$USE_VISUAL_COT" = "true" ]; then
+    USE_VISUAL_COT=True
+else
+    USE_VISUAL_COT=False
 fi
 
 if [ "$SYNC_TRANSFORMERS_PATCH" = "True" ] || [ "$SYNC_TRANSFORMERS_PATCH" = "true" ]; then
@@ -185,6 +195,9 @@ echo "  Attention Backend: $ATTN_IMPLEMENTATION"
 echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
 echo "  Use DeepSpeed: $USE_DEEPSPEED"
 echo "  Use Hybrid Attention: $USE_HYBRID_ATTENTION"
+echo "  Use Visual CoT Subgoal Sampling: $USE_VISUAL_COT"
+echo "  Subgoal Offset Range: $SUBGOAL_MIN_OFFSET-$SUBGOAL_MAX_OFFSET"
+echo "  Subgoal Sampling Strategy: $SUBGOAL_SAMPLING_STRATEGY"
 echo "  Sync Transformers Patch: $SYNC_TRANSFORMERS_PATCH"
 echo "  Resume Training: $RESUME_TRAINING"
 echo "  Auto New Output Dir: $AUTO_NEW_OUTPUT_DIR"
@@ -227,6 +240,10 @@ train_args=(
     --lazy_preprocess True
     --report_to "$REPORT_TO"
     --use_hybrid_attention "$USE_HYBRID_ATTENTION"
+    --use_visual_cot "$USE_VISUAL_COT"
+    --subgoal_min_offset "$SUBGOAL_MIN_OFFSET"
+    --subgoal_max_offset "$SUBGOAL_MAX_OFFSET"
+    --subgoal_sampling_strategy "$SUBGOAL_SAMPLING_STRATEGY"
     --action_chunk_size "$ACTION_CHUNK_SIZE"
     --action_dim "$ACTION_DIM"
     --remove_pause_intervals "$REMOVE_PAUSE_INTERVALS"
