@@ -185,8 +185,9 @@ Critical design choice:
 
 Deliverables:
 
-- Visual loss helper with shape checks.
-- Config flags for `use_visual_cot`, `subgoal_horizon`, `visual_loss_weight`, and `action_loss_weight`.
+- Implemented visual loss helper in `vila_u/train/train_action_prediction_main.py`.
+- Config flags for `use_visual_cot_loss`, `visual_loss_weight`, and `action_loss_weight`.
+- `scripts/train_phase4_visual_cot.sh` enables subgoal residual-code loss.
 - Tests with fake codes/logits or a tiny mocked RQTransformer.
 
 Validation:
@@ -212,8 +213,10 @@ Implementation notes:
 
 Deliverables:
 
-- `generate_with_visual_cot(...)` or equivalent model method.
-- Offline eval script that can run `phase3`, `phase4_oracle_subgoal`, and `phase4_generated_subgoal` modes.
+- `generate_visual_cot_subgoal(...)` generates subgoal embeddings/codes/image.
+- `predict_action_with_generated_subgoal(...)` performs two-stage generated-subgoal action prediction.
+- `scripts/check_phase4_oracle_subgoal.py --mode generated` checks generated-subgoal inference.
+- `scripts/eval_phase4_oracle_subgoal_offline.py --mode generated` evaluates generated-subgoal action prediction offline.
 - Optional visualization utility that saves observation, GT/generated subgoal, and action summary.
 
 Validation:

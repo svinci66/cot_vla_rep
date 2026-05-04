@@ -37,6 +37,9 @@ LOW_CPU_MEM_USAGE=${LOW_CPU_MEM_USAGE:-True}
 USE_DEEPSPEED=${USE_DEEPSPEED:-False}
 USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
 USE_VISUAL_COT=${USE_VISUAL_COT:-False}
+USE_VISUAL_COT_LOSS=${USE_VISUAL_COT_LOSS:-False}
+VISUAL_LOSS_WEIGHT=${VISUAL_LOSS_WEIGHT:-1.0}
+ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-1.0}
 SUBGOAL_MIN_OFFSET=${SUBGOAL_MIN_OFFSET:-1}
 SUBGOAL_MAX_OFFSET=${SUBGOAL_MAX_OFFSET:-$ACTION_CHUNK_SIZE}
 SUBGOAL_SAMPLING_STRATEGY=${SUBGOAL_SAMPLING_STRATEGY:-uniform}
@@ -59,6 +62,12 @@ if [ "$USE_VISUAL_COT" = "True" ] || [ "$USE_VISUAL_COT" = "true" ]; then
     USE_VISUAL_COT=True
 else
     USE_VISUAL_COT=False
+fi
+
+if [ "$USE_VISUAL_COT_LOSS" = "True" ] || [ "$USE_VISUAL_COT_LOSS" = "true" ]; then
+    USE_VISUAL_COT_LOSS=True
+else
+    USE_VISUAL_COT_LOSS=False
 fi
 
 if [ "$SYNC_TRANSFORMERS_PATCH" = "True" ] || [ "$SYNC_TRANSFORMERS_PATCH" = "true" ]; then
@@ -196,6 +205,9 @@ echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
 echo "  Use DeepSpeed: $USE_DEEPSPEED"
 echo "  Use Hybrid Attention: $USE_HYBRID_ATTENTION"
 echo "  Use Visual CoT Subgoal Sampling: $USE_VISUAL_COT"
+echo "  Use Visual CoT Loss: $USE_VISUAL_COT_LOSS"
+echo "  Visual Loss Weight: $VISUAL_LOSS_WEIGHT"
+echo "  Action Loss Weight: $ACTION_LOSS_WEIGHT"
 echo "  Subgoal Offset Range: $SUBGOAL_MIN_OFFSET-$SUBGOAL_MAX_OFFSET"
 echo "  Subgoal Sampling Strategy: $SUBGOAL_SAMPLING_STRATEGY"
 echo "  Sync Transformers Patch: $SYNC_TRANSFORMERS_PATCH"
@@ -241,6 +253,9 @@ train_args=(
     --report_to "$REPORT_TO"
     --use_hybrid_attention "$USE_HYBRID_ATTENTION"
     --use_visual_cot "$USE_VISUAL_COT"
+    --use_visual_cot_loss "$USE_VISUAL_COT_LOSS"
+    --visual_loss_weight "$VISUAL_LOSS_WEIGHT"
+    --action_loss_weight "$ACTION_LOSS_WEIGHT"
     --subgoal_min_offset "$SUBGOAL_MIN_OFFSET"
     --subgoal_max_offset "$SUBGOAL_MAX_OFFSET"
     --subgoal_sampling_strategy "$SUBGOAL_SAMPLING_STRATEGY"

@@ -75,7 +75,7 @@ def iter_libero_samples(data_root: str, action_chunk_size: int, subgoal_offset: 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Offline eval for Phase 4 oracle-subgoal baseline.")
+    parser = argparse.ArgumentParser(description="Offline eval for Phase 4 subgoal-conditioned baseline.")
     parser.add_argument("--model-path", required=True, help="Checkpoint or output directory.")
     parser.add_argument(
         "--data-root",
@@ -85,6 +85,8 @@ def main():
     parser.add_argument("--device", default="cuda", help="Device, e.g. cuda or cpu.")
     parser.add_argument("--max-samples", type=int, default=100)
     parser.add_argument("--subgoal-offset", type=int, default=10)
+    parser.add_argument("--mode", choices=("oracle", "generated"), default="oracle")
+    parser.add_argument("--cfg", type=float, default=3.0)
     parser.add_argument("--output-json", default=None)
     args = parser.parse_args()
 
@@ -99,12 +101,13 @@ def main():
     action_dim = int(model.config.action_dim)
 
     print("=" * 72)
-    print("Phase 4 Oracle-Subgoal Offline Evaluation")
+    print("Phase 4 Subgoal-Conditioned Offline Evaluation")
     print("=" * 72)
     print(f"Resolved model path: {resolved_model_path}")
     print(f"Data root: {args.data_root}")
     print(f"Max samples: {args.max_samples}")
     print(f"Subgoal offset: {args.subgoal_offset}")
+    print(f"Mode: {args.mode}")
     print(f"Action shape: ({action_chunk_size}, {action_dim})")
     print()
 
@@ -123,12 +126,21 @@ def main():
             break
 
         with torch.no_grad():
-            pred_actions = model.predict_action(
-                image=sample["image"],
-                instruction=sample["instruction"],
-                image_processor=image_processor,
-                subgoal_image=sample["subgoal_image"],
-            ).detach().cpu().float().numpy()
+            if args.mode == "oracle":
+                pred_actions = model.predict_action(
+                    image=sample["image"],
+                    instruction=sample["instruction"],
+                    image_processor=image_processor,
+                    subgoal_image=sample["subgoal_image"],
+                )
+            else:
+                pred_actions = model.predict_action_with_generated_subgoal(
+                    image=sample["image"],
+                    instruction=sample["instruction"],
+                    image_processor=image_processor,
+                    cfg=args.cfg,
+                )
+            pred_actions = pred_actions.detach().cpu().float().numpy()
 
         gt_actions = sample["action_labels"].astype(np.float32)
         abs_error = np.abs(pred_actions - gt_actions)
@@ -156,6 +168,8 @@ def main():
         "data_root": args.data_root,
         "num_samples": len(maes),
         "subgoal_offset": args.subgoal_offset,
+        "mode": args.mode,
+        "cfg": args.cfg,
         "mae": float(np.mean(maes)) if maes else None,
         "mse": float(np.mean(mses)) if mses else None,
         "first_step_mae": float(np.mean(first_step_maes)) if first_step_maes else None,

@@ -797,6 +797,7 @@ class VILAUMetaForCausalLM(ABC):
         instruction: str,
         image_processor=None,
         subgoal_image=None,
+        subgoal_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         从单个观察图像和语言指令预测动作序列（推理接口）。
@@ -807,6 +808,7 @@ class VILAUMetaForCausalLM(ABC):
             image_processor: 图像预处理器（可选）
             subgoal_image: 可选 GT 子目标图像。提供时使用 oracle Visual CoT 简化版：
                 将子目标图像编码成视觉 embeddings 并插入 action slots 前。
+            subgoal_embeds: 可选已生成/已编码的子目标 embeddings [1, N, hidden]。
 
         Returns:
             actions: [ACTION_CHUNK_SIZE, ACTION_DIM] 预测的动作序列
@@ -818,6 +820,12 @@ class VILAUMetaForCausalLM(ABC):
             raise RuntimeError("Oracle subgoal inference requires discrete action prediction.")
         if subgoal_image is not None and not getattr(self.config, "use_hybrid_attention", False):
             raise RuntimeError("Oracle subgoal inference requires hybrid attention.")
+        if subgoal_embeds is not None and not getattr(self.config, "use_discrete_action_prediction", False):
+            raise RuntimeError("Subgoal-conditioned inference requires discrete action prediction.")
+        if subgoal_embeds is not None and not getattr(self.config, "use_hybrid_attention", False):
+            raise RuntimeError("Subgoal-conditioned inference requires hybrid attention.")
+        if subgoal_image is not None and subgoal_embeds is not None:
+            raise ValueError("Pass either subgoal_image or subgoal_embeds, not both.")
 
         self.eval()
 
@@ -870,6 +878,8 @@ class VILAUMetaForCausalLM(ABC):
                 subgoal_image,
                 return_tensors='pt',
             )['pixel_values'].to(device, dtype=self.dtype)
+        if subgoal_embeds is not None:
+            subgoal_embeds = subgoal_embeds.to(device=device, dtype=self.dtype)
 
         # 2. 构建输入文本（添加图像占位符）
         from vila_u.constants import DEFAULT_IMAGE_TOKEN
@@ -922,11 +932,12 @@ class VILAUMetaForCausalLM(ABC):
                     labels=None,
                     images=image_tensor,
                 )
-                if subgoal_image_tensor is not None:
-                    subgoal_embeds, _ = self.encode_images(
-                        subgoal_image_tensor,
-                        image_ids=None,
-                    )
+                if subgoal_image_tensor is not None or subgoal_embeds is not None:
+                    if subgoal_embeds is None:
+                        subgoal_embeds, _ = self.encode_images(
+                            subgoal_image_tensor,
+                            image_ids=None,
+                        )
                     valid_len = int(mm_attention_mask[0].long().sum().item())
                     action_start = valid_len - num_action_tokens
                     if action_start < 0:
@@ -1011,3 +1022,189 @@ class VILAUMetaForCausalLM(ABC):
 
         # 返回单个样本的动作
         return actions.squeeze(0)  # [chunk_size, action_dim]
+
+    @torch.no_grad()
+    def generate_visual_cot_subgoal(
+        self,
+        image,
+        instruction: str,
+        image_processor=None,
+        cfg: float = 3.0,
+        return_image: bool = True,
+    ):
+        """Generate subgoal image embeddings from observation and instruction."""
+        self.eval()
+        from PIL import Image
+        import numpy as np
+        from vila_u.constants import DEFAULT_IMAGE_TOKEN
+
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image.astype(np.uint8))
+        elif isinstance(image, torch.Tensor) and image.dim() == 3:
+            if image.shape[0] == 3:
+                image = image.permute(1, 2, 0)
+            image = image.cpu().numpy()
+            if image.max() <= 1.0:
+                image = (image * 255).astype(np.uint8)
+            else:
+                image = image.astype(np.uint8)
+            image = Image.fromarray(image)
+
+        if image_processor is None:
+            image_processor = self.get_vision_tower().image_processor
+
+        device = next(self.parameters()).device
+        image_tensor = image_processor.preprocess(
+            image,
+            return_tensors='pt',
+        )['pixel_values'].to(device, dtype=self.dtype)
+
+        image_token = DEFAULT_IMAGE_TOKEN
+        if getattr(self.config, "mm_use_im_start_end", False):
+            image_token = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+        prompts = [
+            f"{image_token}\n{instruction}",
+            f"{image_token}\n ",
+        ]
+        input_id_list = [
+            tokenize_conversation(
+                [{"from": "human", "value": prompt}],
+                self.tokenizer,
+                add_generation_prompt=True,
+            )
+            for prompt in prompts
+        ]
+        max_len = max(input_ids.shape[0] for input_ids in input_id_list)
+        input_ids = torch.full(
+            (len(input_id_list), max_len),
+            fill_value=self.tokenizer.pad_token_id,
+            dtype=input_id_list[0].dtype,
+            device=device,
+        )
+        for batch_idx, cur_input_ids in enumerate(input_id_list):
+            input_ids[batch_idx, -cur_input_ids.shape[0]:] = cur_input_ids.to(device)
+        attention_mask = input_ids.ne(self.tokenizer.pad_token_id)
+        image_tensor = image_tensor.repeat(len(input_id_list), 1, 1, 1)
+
+        (
+            _,
+            _,
+            mm_attention_mask,
+            _,
+            inputs_embeds,
+            _,
+        ) = self.prepare_inputs_labels_for_multimodal(
+            input_ids=input_ids,
+            position_ids=None,
+            attention_mask=attention_mask,
+            past_key_values=None,
+            labels=None,
+            images=image_tensor,
+        )
+
+        valid_input_embeds = [
+            inputs_embeds[batch_idx][mm_attention_mask[batch_idx].bool()]
+            for batch_idx in range(inputs_embeds.shape[0])
+        ]
+        max_valid_len = max(cur_embeds.shape[0] for cur_embeds in valid_input_embeds)
+        packed_inputs_embeds = inputs_embeds.new_zeros(
+            inputs_embeds.shape[0],
+            max_valid_len,
+            inputs_embeds.shape[-1],
+        )
+        packed_attention_mask = torch.zeros(
+            inputs_embeds.shape[0],
+            max_valid_len,
+            dtype=mm_attention_mask.dtype,
+            device=mm_attention_mask.device,
+        )
+        for batch_idx, cur_embeds in enumerate(valid_input_embeds):
+            cur_len = cur_embeds.shape[0]
+            packed_inputs_embeds[batch_idx, :cur_len] = cur_embeds
+            packed_attention_mask[batch_idx, :cur_len] = True
+        inputs_embeds = packed_inputs_embeds
+        mm_attention_mask = packed_attention_mask
+
+        vision_model = self.vision_tower.vision_tower
+        generated_feature_steps = []
+        generated_code_steps = []
+        current_embeds = inputs_embeds
+        current_attention_mask = mm_attention_mask
+
+        for _ in range(self.vision_tower.image_tokens):
+            outputs = self.llm.model(
+                input_ids=None,
+                attention_mask=current_attention_mask,
+                inputs_embeds=current_embeds,
+                use_cache=False,
+                output_attentions=False,
+                output_hidden_states=False,
+                return_dict=True,
+                seqlens_in_batch=current_attention_mask.sum(dim=-1, dtype=torch.int32),
+            )
+            valid_lens = current_attention_mask.long().sum(dim=-1)
+            subgoal_seed_hidden = outputs.last_hidden_state[
+                torch.arange(outputs.last_hidden_state.shape[0], device=outputs.last_hidden_state.device),
+                valid_lens - 1,
+            ].unsqueeze(1)
+
+            generated_step_features, generated_step_codes = vision_model.rqtransformer.generate(
+                subgoal_seed_hidden,
+                vision_model.rqvaesiglip,
+                cfg,
+            )
+            generated_feature_steps.append(generated_step_features[:1])
+            generated_code_steps.append(generated_step_codes[:1])
+
+            next_step_embeds = self.mm_projector(generated_step_features).to(dtype=self.dtype)
+            current_embeds = torch.cat([current_embeds, next_step_embeds], dim=1)
+            current_attention_mask = torch.cat(
+                [
+                    current_attention_mask,
+                    torch.ones(
+                        (current_attention_mask.shape[0], 1),
+                        dtype=current_attention_mask.dtype,
+                        device=current_attention_mask.device,
+                    ),
+                ],
+                dim=1,
+            )
+
+        generated_features = torch.cat(generated_feature_steps, dim=1)
+        generated_codes = torch.cat(generated_code_steps, dim=1)
+        subgoal_embeds = self.mm_projector(generated_features).to(dtype=self.dtype)
+
+        if not return_image:
+            return subgoal_embeds, generated_codes, None
+
+        side = int(generated_features.shape[1] ** 0.5)
+        subgoal_latents = generated_features.reshape(generated_features.shape[0], side, side, -1)
+        subgoal_image = vision_model.rqvaesiglip.decode(subgoal_latents)
+        subgoal_image = subgoal_image.to(torch.float32).add_(1).mul_(127.5).clamp_(0, 255)
+        return subgoal_embeds, generated_codes, subgoal_image
+
+    @torch.no_grad()
+    def predict_action_with_generated_subgoal(
+        self,
+        image,
+        instruction: str,
+        image_processor=None,
+        cfg: float = 3.0,
+        return_subgoal: bool = False,
+    ):
+        subgoal_embeds, subgoal_codes, subgoal_image = self.generate_visual_cot_subgoal(
+            image=image,
+            instruction=instruction,
+            image_processor=image_processor,
+            cfg=cfg,
+            return_image=return_subgoal,
+        )
+        actions = self.predict_action(
+            image=image,
+            instruction=instruction,
+            image_processor=image_processor,
+            subgoal_embeds=subgoal_embeds,
+        )
+        if return_subgoal:
+            return actions, subgoal_image, subgoal_codes
+        return actions

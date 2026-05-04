@@ -78,7 +78,7 @@ def load_one_oracle_sample(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Check Phase 4 oracle-subgoal inference.")
+    parser = argparse.ArgumentParser(description="Check Phase 4 subgoal-conditioned inference.")
     parser.add_argument("--model-path", required=True, help="Checkpoint or output directory.")
     parser.add_argument(
         "--data-root",
@@ -90,6 +90,13 @@ def main():
     parser.add_argument("--demo-index", type=int, default=0)
     parser.add_argument("--timestep", type=int, default=0)
     parser.add_argument("--subgoal-offset", type=int, default=10)
+    parser.add_argument(
+        "--mode",
+        choices=("oracle", "generated"),
+        default="oracle",
+        help="Use GT future-frame subgoal or generated visual CoT subgoal.",
+    )
+    parser.add_argument("--cfg", type=float, default=3.0, help="Classifier-free guidance for generated subgoals.")
     args = parser.parse_args()
 
     resolved_model_path = resolve_model_path(args.model_path)
@@ -102,7 +109,7 @@ def main():
     )
 
     print("=" * 72)
-    print("Phase 4 Oracle-Subgoal Inference Check")
+    print("Phase 4 Subgoal-Conditioned Inference Check")
     print("=" * 72)
     print(f"Requested model path: {args.model_path}")
     print(f"Resolved model path: {resolved_model_path}")
@@ -110,6 +117,7 @@ def main():
     print(f"Demo: {sample['demo_name']}")
     print(f"Timestep: {sample['timestep']}")
     print(f"Subgoal timestep: {sample['subgoal_timestep']}")
+    print(f"Mode: {args.mode}")
     print()
 
     _, model, image_processor, _ = load_pretrained_model(
@@ -126,14 +134,25 @@ def main():
     print(f"  action_dim = {getattr(model.config, 'action_dim', None)}")
     print()
 
-    print("[2/2] Oracle-subgoal predict_action")
+    print("[2/2] Subgoal-conditioned predict_action")
     with torch.no_grad():
-        actions = model.predict_action(
-            image=sample["image"],
-            instruction=sample["instruction"],
-            image_processor=image_processor,
-            subgoal_image=sample["subgoal_image"],
-        )
+        if args.mode == "oracle":
+            actions = model.predict_action(
+                image=sample["image"],
+                instruction=sample["instruction"],
+                image_processor=image_processor,
+                subgoal_image=sample["subgoal_image"],
+            )
+        else:
+            actions, generated_subgoal, generated_codes = model.predict_action_with_generated_subgoal(
+                image=sample["image"],
+                instruction=sample["instruction"],
+                image_processor=image_processor,
+                cfg=args.cfg,
+                return_subgoal=True,
+            )
+            print(f"  generated subgoal image shape = {tuple(generated_subgoal.shape)}")
+            print(f"  generated subgoal code shape = {tuple(generated_codes.shape)}")
 
     print(f"  predicted action shape = {tuple(actions.shape)}")
     print(f"  finite = {bool(torch.isfinite(actions).all().item())}")
@@ -141,10 +160,10 @@ def main():
     expected_shape = (model.config.action_chunk_size, model.config.action_dim)
     assert tuple(actions.shape) == expected_shape, (tuple(actions.shape), expected_shape)
     assert torch.isfinite(actions).all(), "Predicted actions contain NaN or Inf"
-    print("  ✓ Oracle-subgoal simplified inference path is callable")
+    print("  ✓ Phase 4 subgoal-conditioned inference path is callable")
     print()
     print("=" * 72)
-    print("Phase 4 oracle-subgoal inference check passed")
+    print("Phase 4 subgoal-conditioned inference check passed")
     print("=" * 72)
 
 

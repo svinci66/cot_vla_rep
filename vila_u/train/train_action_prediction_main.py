@@ -107,6 +107,18 @@ class ActionPredictionArguments:
         default="uniform",
         metadata={"help": "Subgoal frame sampling strategy: uniform or fixed"}
     )
+    use_visual_cot_loss: bool = field(
+        default=False,
+        metadata={"help": "Train subgoal visual token prediction with VILA-U RQTransformer"}
+    )
+    visual_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight for Phase 4 visual subgoal residual-code loss"}
+    )
+    action_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight for discrete action token loss"}
+    )
 
 
 class ActionPredictionDataCollator:
@@ -266,6 +278,7 @@ class ActionPredictionTrainer(VILAUTrainer):
                 action_token_count = (
                     core_model.config.action_chunk_size * core_model.config.action_dim
                 )
+                subgoal_prediction_mask = None
                 if inputs.get("subgoal_images") is not None:
                     subgoal_embeds, _ = core_model.encode_images(
                         inputs["subgoal_images"],
@@ -276,6 +289,7 @@ class ActionPredictionTrainer(VILAUTrainer):
                         mm_labels,
                         mm_attention_mask,
                         position_ids,
+                        subgoal_prediction_mask,
                     ) = insert_subgoal_embeds_before_action_block(
                         inputs_embeds=inputs_embeds,
                         labels=mm_labels,
@@ -325,12 +339,33 @@ class ActionPredictionTrainer(VILAUTrainer):
                     action_labels,
                     core_model.config.action_token_ids,
                 )
-                loss = torch.nn.functional.cross_entropy(
+                action_loss = torch.nn.functional.cross_entropy(
                     action_logits.reshape(-1, action_logits.size(-1)),
                     action_label_bins.reshape(-1),
                 )
+                loss = action_loss * float(getattr(core_model.config, "action_loss_weight", 1.0))
+                visual_loss = None
+                if (
+                    getattr(core_model.config, "use_visual_cot_loss", False)
+                    and subgoal_prediction_mask is not None
+                    and inputs.get("subgoal_images") is not None
+                ):
+                    subgoal_hidden_states = outputs.last_hidden_state[subgoal_prediction_mask].view(
+                        batch_size,
+                        -1,
+                        outputs.last_hidden_state.size(-1),
+                    )
+                    visual_loss = compute_visual_cot_loss(
+                        core_model,
+                        subgoal_hidden_states,
+                        inputs["subgoal_images"],
+                    )
+                    loss = loss + visual_loss * float(getattr(core_model.config, "visual_loss_weight", 1.0))
                 if return_outputs:
-                    return loss, {"logits": action_logits}
+                    output = {"logits": action_logits, "action_loss": action_loss}
+                    if visual_loss is not None:
+                        output["visual_loss"] = visual_loss
+                    return loss, output
                 return loss
 
             outputs = model(
@@ -438,8 +473,13 @@ def insert_subgoal_embeds_before_action_block(
     subgoal_embeds: torch.Tensor,
     num_action_tokens: int,
     ignore_index: int = IGNORE_INDEX,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Insert GT subgoal image embeddings immediately before action slots."""
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
+    """Insert GT subgoal image embeddings immediately before action slots.
+
+    Returns a prediction-position mask for visual loss. The mask covers the
+    hidden positions that should predict subgoal codes: the token before the
+    first subgoal embedding and the first N-1 subgoal embedding positions.
+    """
     batch_size, _, hidden_size = inputs_embeds.shape
     subgoal_len = subgoal_embeds.shape[1]
     label_depth = labels.shape[-1]
@@ -496,6 +536,11 @@ def insert_subgoal_embeds_before_action_block(
         dtype=attention_mask.dtype,
         device=attention_mask.device,
     )
+    subgoal_prediction_mask = torch.zeros(
+        (batch_size, max_len),
+        dtype=torch.bool,
+        device=attention_mask.device,
+    )
     padded_position_ids = None
     if position_ids is not None:
         padded_position_ids = torch.zeros(
@@ -509,6 +554,11 @@ def insert_subgoal_embeds_before_action_block(
         padded_embeds[batch_idx, :cur_len] = cur_embeds
         padded_labels[batch_idx, :cur_len] = cur_labels
         padded_attention_mask[batch_idx, :cur_len] = True
+        action_start = cur_len - num_action_tokens
+        subgoal_start = action_start - subgoal_len
+        if subgoal_start <= 0:
+            raise ValueError("Subgoal block needs at least one context token for visual prediction")
+        subgoal_prediction_mask[batch_idx, subgoal_start - 1:action_start - 1] = True
         if padded_position_ids is not None:
             padded_position_ids[batch_idx, :cur_len] = torch.arange(
                 0,
@@ -517,7 +567,45 @@ def insert_subgoal_embeds_before_action_block(
                 device=padded_position_ids.device,
             )
 
-    return padded_embeds, padded_labels, padded_attention_mask, padded_position_ids
+    return (
+        padded_embeds,
+        padded_labels,
+        padded_attention_mask,
+        padded_position_ids,
+        subgoal_prediction_mask,
+    )
+
+
+def compute_visual_cot_loss(
+    core_model,
+    subgoal_hidden_states: torch.Tensor,
+    subgoal_images: torch.Tensor,
+) -> torch.Tensor:
+    vision_tower = core_model.get_vision_tower()
+    vision_model = vision_tower.vision_tower
+    rqvae = vision_model.rqvaesiglip
+    rqtransformer = vision_model.rqtransformer
+
+    vision_param = next(vision_tower.parameters())
+    subgoal_images = subgoal_images.to(
+        device=vision_param.device,
+        dtype=vision_param.dtype,
+        non_blocking=True,
+    )
+    with torch.no_grad():
+        subgoal_codes, _ = rqvae.encode_image(subgoal_images)
+    subgoal_codes = subgoal_codes.reshape(subgoal_codes.shape[0], -1, subgoal_codes.shape[-1]).long()
+
+    visual_logits = rqtransformer(
+        subgoal_hidden_states.to(device=vision_param.device, dtype=vision_param.dtype),
+        subgoal_codes,
+        rqvae,
+    )
+    batch_size, seq_len, depth, vocab_size = visual_logits.shape
+    return torch.nn.functional.cross_entropy(
+        visual_logits.reshape(batch_size * seq_len * depth, vocab_size),
+        subgoal_codes.reshape(batch_size * seq_len * depth).to(visual_logits.device),
+    )
 
 
 def make_action_prediction_data_module(
@@ -628,6 +716,8 @@ def train():
         raise ValueError("Phase 4 Visual CoT currently requires discrete action prediction")
     if action_args.use_visual_cot and not action_args.use_hybrid_attention:
         raise ValueError("Phase 4 Visual CoT requires hybrid attention for action slots")
+    if action_args.use_visual_cot_loss and not action_args.use_visual_cot:
+        raise ValueError("Visual CoT loss requires use_visual_cot=True")
 
     # Enable action prediction
     config.use_discrete_action_prediction = action_args.use_discrete_action_prediction
@@ -637,6 +727,9 @@ def train():
     config.subgoal_min_offset = action_args.subgoal_min_offset
     config.subgoal_max_offset = action_args.subgoal_max_offset
     config.subgoal_sampling_strategy = action_args.subgoal_sampling_strategy
+    config.use_visual_cot_loss = action_args.use_visual_cot_loss
+    config.visual_loss_weight = action_args.visual_loss_weight
+    config.action_loss_weight = action_args.action_loss_weight
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
     config.action_num_bins = ACTION_NUM_BINS

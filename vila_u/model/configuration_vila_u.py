@@ -50,3 +50,6 @@ class VILAUConfig(PretrainedConfig):
         self.subgoal_min_offset = kwargs.pop("subgoal_min_offset", 1)
         self.subgoal_max_offset = kwargs.pop("subgoal_max_offset", None)
         self.subgoal_sampling_strategy = kwargs.pop("subgoal_sampling_strategy", "uniform")
+        self.use_visual_cot_loss = kwargs.pop("use_visual_cot_loss", False)
+        self.visual_loss_weight = kwargs.pop("visual_loss_weight", 1.0)
+        self.action_loss_weight = kwargs.pop("action_loss_weight", 1.0)
