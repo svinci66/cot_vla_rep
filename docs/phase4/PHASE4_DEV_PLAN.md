@@ -217,7 +217,8 @@ Deliverables:
 - `predict_action_with_generated_subgoal(...)` performs two-stage generated-subgoal action prediction.
 - `scripts/check_phase4_oracle_subgoal.py --mode generated` checks generated-subgoal inference.
 - `scripts/eval_phase4_oracle_subgoal_offline.py --mode generated` evaluates generated-subgoal action prediction offline.
-- Optional visualization utility that saves observation, GT/generated subgoal, and action summary.
+- `scripts/visualize_phase4_subgoals.py --mode both` saves observation, GT subgoal, generated subgoal, and action summary panels.
+- `vila_u/eval/trajectory_generator.py` supports `subgoal_mode="generated"` for later LIBERO rollout evaluation.
 
 Validation:
 
@@ -287,4 +288,5 @@ Phase 4 is considered implementation-complete only when:
 - Generated-subgoal inference works end-to-end.
 - Action-token vocabulary repurposing remains unchanged.
 - Tests cover dataset shapes, visual-code loss shape, hybrid attention with inserted subgoal embeddings, and action-token decoding.
+  Current lightweight coverage: `tests/test_phase4_visual_cot.py` checks causal 4D masks, subgoal insertion before action slots, and visual CoT loss shape.
 - Evaluation can compare Phase 3 vs Phase 4 under the same LIBERO suite, seeds, and episode count.

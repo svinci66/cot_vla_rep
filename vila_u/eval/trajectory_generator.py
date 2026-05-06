@@ -45,12 +45,46 @@ class TrajectoryGenerator:
         self.model.to(device)
 
     @torch.no_grad()
+    def _predict_action_chunk(
+        self,
+        image,
+        instruction: str,
+        subgoal_mode: str = "none",
+        oracle_subgoal_image=None,
+        cfg: float = 3.0,
+    ):
+        if subgoal_mode == "none":
+            return self.model.predict_action(
+                image=image,
+                instruction=instruction,
+                image_processor=self.image_processor,
+            )
+        if subgoal_mode == "oracle":
+            if oracle_subgoal_image is None:
+                raise ValueError("oracle subgoal mode requires oracle_subgoal_image")
+            return self.model.predict_action(
+                image=image,
+                instruction=instruction,
+                image_processor=self.image_processor,
+                subgoal_image=oracle_subgoal_image,
+            )
+        if subgoal_mode == "generated":
+            return self.model.predict_action_with_generated_subgoal(
+                image=image,
+                instruction=instruction,
+                image_processor=self.image_processor,
+                cfg=cfg,
+            )
+        raise ValueError(f"Unsupported subgoal_mode: {subgoal_mode}")
+
     def generate_trajectory(
         self,
         env,
         instruction: str,
         camera_name: str = "agentview_image",
         verbose: bool = True,
+        subgoal_mode: str = "none",
+        cfg: float = 3.0,
     ) -> Dict:
         """
         在环境中生成完整轨迹
@@ -97,10 +131,11 @@ class TrajectoryGenerator:
             # 2. 预测动作 chunk
             if len(action_queue) == 0:
                 # 队列为空，需要预测新的动作 chunk
-                action_chunk = self.model.predict_action(
+                action_chunk = self._predict_action_chunk(
                     image=current_obs,
                     instruction=instruction,
-                    image_processor=self.image_processor,
+                    subgoal_mode=subgoal_mode,
+                    cfg=cfg,
                 )  # [chunk_size, 7]
 
                 # 将动作加入队列
@@ -141,6 +176,7 @@ class TrajectoryGenerator:
             'success': success,
             'num_steps': step,
             'instruction': instruction,
+            'subgoal_mode': subgoal_mode,
         }
 
         if verbose:
@@ -155,6 +191,8 @@ class TrajectoryGenerator:
         num_trajectories: int = 10,
         camera_name: str = "agentview_image",
         verbose: bool = True,
+        subgoal_mode: str = "none",
+        cfg: float = 3.0,
     ) -> List[Dict]:
         """
         生成多条轨迹（用于评估）
@@ -183,6 +221,8 @@ class TrajectoryGenerator:
                 instruction=instruction,
                 camera_name=camera_name,
                 verbose=verbose,
+                subgoal_mode=subgoal_mode,
+                cfg=cfg,
             )
 
             trajectories.append(trajectory)
@@ -208,6 +248,8 @@ class TrajectoryGenerator:
         camera_name: str = "agentview_image",
         ensemble_k: int = 5,
         verbose: bool = True,
+        subgoal_mode: str = "none",
+        cfg: float = 3.0,
     ) -> Dict:
         """
         使用 temporal ensembling 生成轨迹
@@ -249,10 +291,11 @@ class TrajectoryGenerator:
             observations.append(current_obs.copy())
 
             # 预测动作
-            action_chunk = self.model.predict_action(
+            action_chunk = self._predict_action_chunk(
                 image=current_obs,
                 instruction=instruction,
-                image_processor=self.image_processor,
+                subgoal_mode=subgoal_mode,
+                cfg=cfg,
             )  # [chunk_size, 7]
 
             # 取第一个动作
@@ -292,6 +335,7 @@ class TrajectoryGenerator:
             'success': success,
             'num_steps': step,
             'instruction': instruction,
+            'subgoal_mode': subgoal_mode,
         }
 
         if verbose:

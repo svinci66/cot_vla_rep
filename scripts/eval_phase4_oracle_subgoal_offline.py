@@ -88,6 +88,11 @@ def main():
     parser.add_argument("--mode", choices=("oracle", "generated"), default="oracle")
     parser.add_argument("--cfg", type=float, default=3.0)
     parser.add_argument("--output-json", default=None)
+    parser.add_argument(
+        "--save-records",
+        action="store_true",
+        help="Include per-sample predictions and labels in the JSON output.",
+    )
     args = parser.parse_args()
 
     resolved_model_path = resolve_model_path(args.model_path)
@@ -114,6 +119,11 @@ def main():
     maes = []
     mses = []
     first_step_maes = []
+    per_dim_abs_errors = []
+    per_horizon_abs_errors = []
+    pred_mins = []
+    pred_maxes = []
+    finite_flags = []
     records = []
 
     sample_iter = iter_libero_samples(
@@ -148,20 +158,32 @@ def main():
         mae = float(abs_error.mean())
         mse = float(sq_error.mean())
         first_step_mae = float(abs_error[0].mean())
+        finite = bool(np.isfinite(pred_actions).all())
         maes.append(mae)
         mses.append(mse)
         first_step_maes.append(first_step_mae)
-        records.append(
-            {
-                "file": sample["data_file"],
-                "demo": sample["demo_name"],
-                "timestep": sample["timestep"],
-                "subgoal_timestep": sample["subgoal_timestep"],
-                "mae": mae,
-                "mse": mse,
-                "first_step_mae": first_step_mae,
-            }
-        )
+        per_dim_abs_errors.append(abs_error.mean(axis=0))
+        per_horizon_abs_errors.append(abs_error.mean(axis=1))
+        pred_mins.append(float(np.min(pred_actions)))
+        pred_maxes.append(float(np.max(pred_actions)))
+        finite_flags.append(finite)
+
+        record = {
+            "file": sample["data_file"],
+            "demo": sample["demo_name"],
+            "timestep": sample["timestep"],
+            "subgoal_timestep": sample["subgoal_timestep"],
+            "mae": mae,
+            "mse": mse,
+            "first_step_mae": first_step_mae,
+            "pred_min": pred_mins[-1],
+            "pred_max": pred_maxes[-1],
+            "finite": finite,
+        }
+        if args.save_records:
+            record["pred_actions"] = pred_actions.tolist()
+            record["gt_actions"] = gt_actions.tolist()
+        records.append(record)
 
     summary = {
         "model_path": resolved_model_path,
@@ -173,6 +195,11 @@ def main():
         "mae": float(np.mean(maes)) if maes else None,
         "mse": float(np.mean(mses)) if mses else None,
         "first_step_mae": float(np.mean(first_step_maes)) if first_step_maes else None,
+        "per_dim_mae": np.mean(per_dim_abs_errors, axis=0).astype(float).tolist() if per_dim_abs_errors else None,
+        "per_horizon_mae": np.mean(per_horizon_abs_errors, axis=0).astype(float).tolist() if per_horizon_abs_errors else None,
+        "pred_min": float(np.min(pred_mins)) if pred_mins else None,
+        "pred_max": float(np.max(pred_maxes)) if pred_maxes else None,
+        "finite_rate": float(np.mean(finite_flags)) if finite_flags else None,
         "records": records,
     }
 
@@ -182,6 +209,10 @@ def main():
     print(f"  mae = {summary['mae']}")
     print(f"  mse = {summary['mse']}")
     print(f"  first_step_mae = {summary['first_step_mae']}")
+    print(f"  per_dim_mae = {summary['per_dim_mae']}")
+    print(f"  per_horizon_mae = {summary['per_horizon_mae']}")
+    print(f"  pred_min/max = {summary['pred_min']}/{summary['pred_max']}")
+    print(f"  finite_rate = {summary['finite_rate']}")
 
     if args.output_json:
         output_path = Path(args.output_json)
