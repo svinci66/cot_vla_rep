@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # 8-GPU Phase 4 Visual CoT action prediction training wrapper.
-# This keeps backward compatibility with the old 8-card launch command while
-# routing through the current shared training script.
+# This is intentionally separate from legacy train_action_prediction_8.sh.
 
 set -e
 
