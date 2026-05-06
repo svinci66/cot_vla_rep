@@ -75,3 +75,44 @@ def build_hybrid_attention_mask(
         disallowed[batch_idx, 0].masked_fill_(allowed, 0)
 
     return disallowed
+
+
+def build_causal_attention_mask(
+    attention_mask: torch.Tensor,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Build an additive 4D causal attention mask from a 2D valid-token mask."""
+
+    if attention_mask.ndim != 2:
+        raise ValueError(
+            f"Expected 2D attention mask of shape [B, L], got {attention_mask.shape}"
+        )
+
+    batch_size, seq_len = attention_mask.shape
+    device = attention_mask.device
+    mask_2d = attention_mask.bool()
+
+    disallowed = torch.full(
+        (batch_size, 1, seq_len, seq_len),
+        torch.finfo(dtype).min,
+        dtype=dtype,
+        device=device,
+    )
+
+    for batch_idx in range(batch_size):
+        valid_len = int(mask_2d[batch_idx].sum().item())
+        if valid_len == 0:
+            disallowed[batch_idx, 0].fill_(0)
+            continue
+
+        allowed = torch.zeros((seq_len, seq_len), dtype=torch.bool, device=device)
+        causal = torch.tril(torch.ones((valid_len, valid_len), dtype=torch.bool, device=device))
+        allowed[:valid_len, :valid_len] = causal
+
+        if valid_len < seq_len:
+            pad_indices = torch.arange(valid_len, seq_len, device=device)
+            allowed[pad_indices, pad_indices] = True
+
+        disallowed[batch_idx, 0].masked_fill_(allowed, 0)
+
+    return disallowed

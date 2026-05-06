@@ -28,7 +28,10 @@ from vila_u.model.multimodal_projector.builder import build_mm_projector
 from vila_u.model.utils import get_model_config
 from vila_u.mm_utils import process_images
 from vila_u.utils.media import extract_media
-from vila_u.utils.hybrid_attention import build_hybrid_attention_mask
+from vila_u.utils.hybrid_attention import (
+    build_causal_attention_mask,
+    build_hybrid_attention_mask,
+)
 from vila_u.utils.tokenizer import infer_stop_tokens, tokenize_conversation
 from vila_u.utils.action_tokenizer import (
     AllowedActionTokensLogitsProcessor,
@@ -1132,15 +1135,19 @@ class VILAUMetaForCausalLM(ABC):
         current_attention_mask = mm_attention_mask
 
         for _ in range(self.vision_tower.image_tokens):
+            causal_attention_mask = build_causal_attention_mask(
+                current_attention_mask,
+                dtype=current_embeds.dtype,
+            )
             outputs = self.llm.model(
                 input_ids=None,
-                attention_mask=current_attention_mask,
+                attention_mask=causal_attention_mask,
                 inputs_embeds=current_embeds,
                 use_cache=False,
                 output_attentions=False,
                 output_hidden_states=False,
                 return_dict=True,
-                seqlens_in_batch=current_attention_mask.sum(dim=-1, dtype=torch.int32),
+                seqlens_in_batch=None,
             )
             valid_lens = current_attention_mask.long().sum(dim=-1)
             subgoal_seed_hidden = outputs.last_hidden_state[
