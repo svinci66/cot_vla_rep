@@ -160,7 +160,33 @@ def test_compute_visual_cot_loss_with_fake_rqtransformer():
     print("✓ visual CoT loss shape verified")
 
 
+def test_compute_visual_cot_loss_with_offset_codes():
+    codes = torch.tensor([[[[0, 1], [2, 3]], [[1, 2], [3, 4]]]], dtype=torch.long)
+    image_tokens = 4
+    depth = 2
+    vocab_size = 8
+    hidden_size = 6
+    offset = 32000
+    subgoal_hidden_states = torch.randn(1, image_tokens, hidden_size)
+    subgoal_images = torch.randn(1, 3, 8, 8)
+    core_model = FakeCoreModel(FakeVisionTower(codes, vocab_size))
+
+    loss = compute_visual_cot_loss(
+        core_model,
+        subgoal_hidden_states,
+        subgoal_images,
+        subgoal_codes=codes.reshape(1, image_tokens, depth) + offset,
+        subgoal_code_offset=offset,
+    )
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+    assert loss.item() < 0.01
+    print("✓ visual CoT loss offset-code path verified")
+
+
 if __name__ == "__main__":
     test_causal_attention_mask_4d()
     test_insert_subgoal_embeds_before_action_block()
     test_compute_visual_cot_loss_with_fake_rqtransformer()
+    test_compute_visual_cot_loss_with_offset_codes()

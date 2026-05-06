@@ -31,6 +31,8 @@ ACTION_DIM=${ACTION_DIM:-7}
 REMOVE_PAUSE_INTERVALS=${REMOVE_PAUSE_INTERVALS:-True}
 PAUSE_THRESHOLD=${PAUSE_THRESHOLD:-0.01}
 REPORT_TO=${REPORT_TO:-wandb}
+DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-4}
+GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 SUPPRESS_FUTURE_WARNING=${SUPPRESS_FUTURE_WARNING:-True}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-eager}
 LOW_CPU_MEM_USAGE=${LOW_CPU_MEM_USAGE:-True}
@@ -196,6 +198,8 @@ echo "  Epochs: $NUM_EPOCHS"
 echo "  Learning Rate: $LEARNING_RATE"
 echo "  Batch Size: $bs per device"
 echo "  Gradient Accumulation: $acc_step"
+echo "  Dataloader Workers: $DATALOADER_NUM_WORKERS"
+echo "  Gradient Checkpointing: $GRADIENT_CHECKPOINTING"
 echo "  Effective Batch Size: $effective_bs"
 echo "  Image Size: $IMAGE_SIZE"
 echo "  Action Chunk Size: $ACTION_CHUNK_SIZE"
@@ -247,8 +251,8 @@ train_args=(
     --logging_steps 10
     --tf32 True
     --model_max_length 2048
-    --gradient_checkpointing True
-    --dataloader_num_workers 4
+    --gradient_checkpointing "$GRADIENT_CHECKPOINTING"
+    --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
     --lazy_preprocess True
     --report_to "$REPORT_TO"
     --use_hybrid_attention "$USE_HYBRID_ATTENTION"

@@ -280,7 +280,7 @@ class ActionPredictionTrainer(VILAUTrainer):
                 )
                 subgoal_prediction_mask = None
                 if inputs.get("subgoal_images") is not None:
-                    subgoal_embeds, _ = core_model.encode_images(
+                    subgoal_embeds, subgoal_codes = core_model.encode_images(
                         inputs["subgoal_images"],
                         image_ids=None,
                     )
@@ -359,6 +359,8 @@ class ActionPredictionTrainer(VILAUTrainer):
                         core_model,
                         subgoal_hidden_states,
                         inputs["subgoal_images"],
+                        subgoal_codes=subgoal_codes,
+                        subgoal_code_offset=core_model.llm.vocab_size,
                     )
                     loss = loss + visual_loss * float(getattr(core_model.config, "visual_loss_weight", 1.0))
                 if return_outputs:
@@ -580,6 +582,8 @@ def compute_visual_cot_loss(
     core_model,
     subgoal_hidden_states: torch.Tensor,
     subgoal_images: torch.Tensor,
+    subgoal_codes: torch.Tensor | None = None,
+    subgoal_code_offset: int = 0,
 ) -> torch.Tensor:
     vision_tower = core_model.get_vision_tower()
     vision_model = vision_tower.vision_tower
@@ -587,13 +591,16 @@ def compute_visual_cot_loss(
     rqtransformer = vision_model.rqtransformer
 
     vision_param = next(vision_tower.parameters())
-    subgoal_images = subgoal_images.to(
-        device=vision_param.device,
-        dtype=vision_param.dtype,
-        non_blocking=True,
-    )
-    with torch.no_grad():
-        subgoal_codes, _ = rqvae.encode_image(subgoal_images)
+    if subgoal_codes is None:
+        subgoal_images = subgoal_images.to(
+            device=vision_param.device,
+            dtype=vision_param.dtype,
+            non_blocking=True,
+        )
+        with torch.no_grad():
+            subgoal_codes, _ = rqvae.encode_image(subgoal_images)
+    if subgoal_code_offset:
+        subgoal_codes = subgoal_codes - int(subgoal_code_offset)
     subgoal_codes = subgoal_codes.reshape(subgoal_codes.shape[0], -1, subgoal_codes.shape[-1]).long()
 
     visual_logits = rqtransformer(
