@@ -58,7 +58,7 @@ if impl != "CPython":
     )
 PY
 
-conda install -c conda-forge cmake ninja "numpy>=1.23,<1.25" opencv -y
+conda install -c conda-forge cmake ninja "numpy=1.22.4" -y
 python -m pip install --upgrade pip setuptools wheel
 
 if [ ! -d "$LIBERO_ROOT/.git" ]; then
@@ -70,7 +70,6 @@ cd "$LIBERO_ROOT"
 
 python -m pip install --no-build-isolation -r requirements.txt
 python -m pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
-python -m pip install robosuite
 python -m pip install -e .
 
 if [ -n "$DATASETS" ]; then
