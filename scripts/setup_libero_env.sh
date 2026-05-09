@@ -12,6 +12,7 @@ DATASETS="${LIBERO_DATASETS:-}"
 USE_HUGGINGFACE="${LIBERO_USE_HUGGINGFACE:-0}"
 PYTHON_VERSION="${LIBERO_PYTHON_VERSION:-3.8.13}"
 RECREATE_ENV="${LIBERO_RECREATE_ENV:-0}"
+TORCH_VARIANT="${LIBERO_TORCH_VARIANT:-cpu}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -69,7 +70,14 @@ fi
 cd "$LIBERO_ROOT"
 
 python -m pip install --no-build-isolation -r requirements.txt
-python -m pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
+if [ "$TORCH_VARIANT" = "cu113" ]; then
+    python -m pip install --no-cache-dir torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
+elif [ "$TORCH_VARIANT" = "cpu" ]; then
+    python -m pip install --no-cache-dir torch==1.11.0+cpu torchvision==0.12.0+cpu torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cpu
+else
+    echo "Unsupported LIBERO_TORCH_VARIANT=$TORCH_VARIANT. Use cpu or cu113." >&2
+    exit 1
+fi
 python -m pip install -e .
 
 if [ -n "$DATASETS" ]; then
