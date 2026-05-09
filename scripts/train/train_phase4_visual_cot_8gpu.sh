@@ -22,6 +22,17 @@ export MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-
 export DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
 export OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction-phase4-visual-cot-8gpu"}
 
+# Reduce noisy startup/link warnings. Errors are still shown.
+export QUIET_TRAINING_LOGS=${QUIET_TRAINING_LOGS:-True}
+if [ "$QUIET_TRAINING_LOGS" = "True" ] || [ "$QUIET_TRAINING_LOGS" = "true" ]; then
+    export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
+    export TRANSFORMERS_VERBOSITY=${TRANSFORMERS_VERBOSITY:-error}
+    export HF_HUB_VERBOSITY=${HF_HUB_VERBOSITY:-error}
+    export TQDM_DISABLE=${TQDM_DISABLE:-1}
+    export WANDB_SILENT=${WANDB_SILENT:-true}
+    export PYTHONWARNINGS=${PYTHONWARNINGS:-ignore::FutureWarning,ignore::UserWarning}
+fi
+
 # 8-GPU launch defaults from the validated command.
 export SINGLE_GPU_MODE=${SINGLE_GPU_MODE:-False}
 export NUM_GPUS=${NUM_GPUS:-8}
