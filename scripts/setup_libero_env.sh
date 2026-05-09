@@ -39,6 +39,7 @@ fi
 
 echo "Using LIBERO conda environment: $ENV_DISPLAY"
 
+conda install -c conda-forge cmake ninja -y
 python -m pip install --upgrade pip setuptools wheel
 
 if [ ! -d "$LIBERO_ROOT/.git" ]; then
