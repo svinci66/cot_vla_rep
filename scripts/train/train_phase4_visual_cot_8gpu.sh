@@ -14,6 +14,8 @@ export PATH="$CONDA_PREFIX_PATH/bin:$PATH"
 # Server/cache defaults.
 export CONDA_ENV_NAME=${CONDA_ENV_NAME:-"vila_env_fixed"}
 export PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
+export REPORT_TO=${REPORT_TO:-none}
+export WANDB_DISABLED=${WANDB_DISABLED:-true}
 export HF_HOME=${HF_HOME:-"/data/share/1919650160032350208/sj/hf_cache_shared"}
 export HF_ENDPOINT=${HF_ENDPOINT:-"https://hf-mirror.com"}
 export MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
