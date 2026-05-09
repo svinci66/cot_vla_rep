@@ -118,6 +118,12 @@ def main():
     pred_mins = []
     pred_maxes = []
     finite_flags = []
+    motion_maes = []
+    motion_mses = []
+    gripper_maes = []
+    gripper_mses = []
+    gripper_sign_matches = []
+    file_stats = {}
     records = []
 
     sample_iter = iter_libero_samples(
@@ -144,6 +150,19 @@ def main():
         mse = float(sq_error.mean())
         first_step_mae = float(abs_error[0].mean())
         finite = bool(np.isfinite(pred_actions).all())
+        motion_abs_error = abs_error[:, :6] if action_dim > 1 else abs_error
+        motion_sq_error = sq_error[:, :6] if action_dim > 1 else sq_error
+        gripper_abs_error = abs_error[:, 6] if action_dim > 6 else None
+        gripper_sq_error = sq_error[:, 6] if action_dim > 6 else None
+        motion_mae = float(motion_abs_error.mean())
+        motion_mse = float(motion_sq_error.mean())
+        gripper_mae = float(gripper_abs_error.mean()) if gripper_abs_error is not None else None
+        gripper_mse = float(gripper_sq_error.mean()) if gripper_sq_error is not None else None
+        gripper_sign_match = (
+            float((np.sign(pred_actions[:, 6]) == np.sign(gt_actions[:, 6])).mean())
+            if action_dim > 6
+            else None
+        )
 
         maes.append(mae)
         mses.append(mse)
@@ -153,6 +172,28 @@ def main():
         pred_mins.append(float(np.min(pred_actions)))
         pred_maxes.append(float(np.max(pred_actions)))
         finite_flags.append(finite)
+        motion_maes.append(motion_mae)
+        motion_mses.append(motion_mse)
+        if gripper_mae is not None:
+            gripper_maes.append(gripper_mae)
+            gripper_mses.append(gripper_mse)
+            gripper_sign_matches.append(gripper_sign_match)
+
+        file_key = os.path.basename(sample["data_file"])
+        if file_key not in file_stats:
+            file_stats[file_key] = {
+                "num_samples": 0,
+                "mae": [],
+                "mse": [],
+                "motion_mae": [],
+                "gripper_mae": [],
+            }
+        file_stats[file_key]["num_samples"] += 1
+        file_stats[file_key]["mae"].append(mae)
+        file_stats[file_key]["mse"].append(mse)
+        file_stats[file_key]["motion_mae"].append(motion_mae)
+        if gripper_mae is not None:
+            file_stats[file_key]["gripper_mae"].append(gripper_mae)
 
         record = {
             "file": sample["data_file"],
@@ -161,6 +202,11 @@ def main():
             "mae": mae,
             "mse": mse,
             "first_step_mae": first_step_mae,
+            "motion_mae": motion_mae,
+            "motion_mse": motion_mse,
+            "gripper_mae": gripper_mae,
+            "gripper_mse": gripper_mse,
+            "gripper_sign_match": gripper_sign_match,
             "pred_min": pred_mins[-1],
             "pred_max": pred_maxes[-1],
             "finite": finite,
@@ -170,6 +216,17 @@ def main():
             record["gt_actions"] = gt_actions.tolist()
         records.append(record)
 
+    file_summary = {
+        file_key: {
+            "num_samples": stats["num_samples"],
+            "mae": float(np.mean(stats["mae"])),
+            "mse": float(np.mean(stats["mse"])),
+            "motion_mae": float(np.mean(stats["motion_mae"])),
+            "gripper_mae": float(np.mean(stats["gripper_mae"])) if stats["gripper_mae"] else None,
+        }
+        for file_key, stats in sorted(file_stats.items())
+    }
+
     summary = {
         "model_path": resolved_model_path,
         "data_root": args.data_root,
@@ -178,11 +235,17 @@ def main():
         "mae": float(np.mean(maes)) if maes else None,
         "mse": float(np.mean(mses)) if mses else None,
         "first_step_mae": float(np.mean(first_step_maes)) if first_step_maes else None,
+        "motion_mae": float(np.mean(motion_maes)) if motion_maes else None,
+        "motion_mse": float(np.mean(motion_mses)) if motion_mses else None,
+        "gripper_mae": float(np.mean(gripper_maes)) if gripper_maes else None,
+        "gripper_mse": float(np.mean(gripper_mses)) if gripper_mses else None,
+        "gripper_sign_match": float(np.mean(gripper_sign_matches)) if gripper_sign_matches else None,
         "per_dim_mae": np.mean(per_dim_abs_errors, axis=0).astype(float).tolist() if per_dim_abs_errors else None,
         "per_horizon_mae": np.mean(per_horizon_abs_errors, axis=0).astype(float).tolist() if per_horizon_abs_errors else None,
         "pred_min": float(np.min(pred_mins)) if pred_mins else None,
         "pred_max": float(np.max(pred_maxes)) if pred_maxes else None,
         "finite_rate": float(np.mean(finite_flags)) if finite_flags else None,
+        "files": file_summary,
         "records": records,
     }
 
@@ -192,10 +255,24 @@ def main():
     print(f"  mae = {summary['mae']}")
     print(f"  mse = {summary['mse']}")
     print(f"  first_step_mae = {summary['first_step_mae']}")
+    print(f"  motion_mae = {summary['motion_mae']}")
+    print(f"  motion_mse = {summary['motion_mse']}")
+    print(f"  gripper_mae = {summary['gripper_mae']}")
+    print(f"  gripper_mse = {summary['gripper_mse']}")
+    print(f"  gripper_sign_match = {summary['gripper_sign_match']}")
     print(f"  per_dim_mae = {summary['per_dim_mae']}")
     print(f"  per_horizon_mae = {summary['per_horizon_mae']}")
     print(f"  pred_min/max = {summary['pred_min']}/{summary['pred_max']}")
     print(f"  finite_rate = {summary['finite_rate']}")
+    if summary["files"]:
+        print("  per_file_mae:")
+        for file_key, stats in summary["files"].items():
+            print(
+                f"    {file_key}: n={stats['num_samples']} "
+                f"mae={stats['mae']:.6f} "
+                f"motion_mae={stats['motion_mae']:.6f} "
+                f"gripper_mae={stats['gripper_mae']}"
+            )
 
     if args.output_json:
         output_path = Path(args.output_json)
