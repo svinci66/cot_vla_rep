@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from vila_u.model.builder import load_pretrained_model
 from vila_u.train.utils import get_checkpoint_path
+from vila_u.utils.action_tokenizer import discretize_actions
 
 
 def resolve_model_path(model_path: str) -> str:
@@ -123,6 +124,12 @@ def main():
     gripper_maes = []
     gripper_mses = []
     gripper_sign_matches = []
+    token_accuracies = []
+    first_step_token_accuracies = []
+    first_step_exact_matches = []
+    chunk_exact_matches = []
+    per_dim_token_accuracies = []
+    gripper_token_accuracies = []
     file_stats = {}
     records = []
 
@@ -163,6 +170,15 @@ def main():
             if action_dim > 6
             else None
         )
+        pred_bins = discretize_actions(torch.from_numpy(pred_actions)).numpy()
+        gt_bins = discretize_actions(torch.from_numpy(gt_actions)).numpy()
+        token_matches = pred_bins == gt_bins
+        token_accuracy = float(token_matches.mean())
+        first_step_token_accuracy = float(token_matches[0].mean())
+        first_step_exact_match = float(token_matches[0].all())
+        chunk_exact_match = float(token_matches.all())
+        per_dim_token_accuracy = token_matches.mean(axis=0).astype(float)
+        gripper_token_accuracy = float(token_matches[:, 6].mean()) if action_dim > 6 else None
 
         maes.append(mae)
         mses.append(mse)
@@ -178,6 +194,13 @@ def main():
             gripper_maes.append(gripper_mae)
             gripper_mses.append(gripper_mse)
             gripper_sign_matches.append(gripper_sign_match)
+        token_accuracies.append(token_accuracy)
+        first_step_token_accuracies.append(first_step_token_accuracy)
+        first_step_exact_matches.append(first_step_exact_match)
+        chunk_exact_matches.append(chunk_exact_match)
+        per_dim_token_accuracies.append(per_dim_token_accuracy)
+        if gripper_token_accuracy is not None:
+            gripper_token_accuracies.append(gripper_token_accuracy)
 
         file_key = os.path.basename(sample["data_file"])
         if file_key not in file_stats:
@@ -187,6 +210,11 @@ def main():
                 "mse": [],
                 "motion_mae": [],
                 "gripper_mae": [],
+                "token_accuracy": [],
+                "first_step_token_accuracy": [],
+                "first_step_exact_match": [],
+                "chunk_exact_match": [],
+                "gripper_token_accuracy": [],
             }
         file_stats[file_key]["num_samples"] += 1
         file_stats[file_key]["mae"].append(mae)
@@ -194,6 +222,12 @@ def main():
         file_stats[file_key]["motion_mae"].append(motion_mae)
         if gripper_mae is not None:
             file_stats[file_key]["gripper_mae"].append(gripper_mae)
+        file_stats[file_key]["token_accuracy"].append(token_accuracy)
+        file_stats[file_key]["first_step_token_accuracy"].append(first_step_token_accuracy)
+        file_stats[file_key]["first_step_exact_match"].append(first_step_exact_match)
+        file_stats[file_key]["chunk_exact_match"].append(chunk_exact_match)
+        if gripper_token_accuracy is not None:
+            file_stats[file_key]["gripper_token_accuracy"].append(gripper_token_accuracy)
 
         record = {
             "file": sample["data_file"],
@@ -207,6 +241,12 @@ def main():
             "gripper_mae": gripper_mae,
             "gripper_mse": gripper_mse,
             "gripper_sign_match": gripper_sign_match,
+            "token_accuracy": token_accuracy,
+            "first_step_token_accuracy": first_step_token_accuracy,
+            "first_step_exact_match": first_step_exact_match,
+            "chunk_exact_match": chunk_exact_match,
+            "per_dim_token_accuracy": per_dim_token_accuracy.tolist(),
+            "gripper_token_accuracy": gripper_token_accuracy,
             "pred_min": pred_mins[-1],
             "pred_max": pred_maxes[-1],
             "finite": finite,
@@ -223,6 +263,15 @@ def main():
             "mse": float(np.mean(stats["mse"])),
             "motion_mae": float(np.mean(stats["motion_mae"])),
             "gripper_mae": float(np.mean(stats["gripper_mae"])) if stats["gripper_mae"] else None,
+            "token_accuracy": float(np.mean(stats["token_accuracy"])),
+            "first_step_token_accuracy": float(np.mean(stats["first_step_token_accuracy"])),
+            "first_step_exact_match": float(np.mean(stats["first_step_exact_match"])),
+            "chunk_exact_match": float(np.mean(stats["chunk_exact_match"])),
+            "gripper_token_accuracy": (
+                float(np.mean(stats["gripper_token_accuracy"]))
+                if stats["gripper_token_accuracy"]
+                else None
+            ),
         }
         for file_key, stats in sorted(file_stats.items())
     }
@@ -240,6 +289,32 @@ def main():
         "gripper_mae": float(np.mean(gripper_maes)) if gripper_maes else None,
         "gripper_mse": float(np.mean(gripper_mses)) if gripper_mses else None,
         "gripper_sign_match": float(np.mean(gripper_sign_matches)) if gripper_sign_matches else None,
+        "token_accuracy": float(np.mean(token_accuracies)) if token_accuracies else None,
+        "first_step_token_accuracy": (
+            float(np.mean(first_step_token_accuracies))
+            if first_step_token_accuracies
+            else None
+        ),
+        "first_step_exact_match": (
+            float(np.mean(first_step_exact_matches))
+            if first_step_exact_matches
+            else None
+        ),
+        "chunk_exact_match": (
+            float(np.mean(chunk_exact_matches))
+            if chunk_exact_matches
+            else None
+        ),
+        "per_dim_token_accuracy": (
+            np.mean(per_dim_token_accuracies, axis=0).astype(float).tolist()
+            if per_dim_token_accuracies
+            else None
+        ),
+        "gripper_token_accuracy": (
+            float(np.mean(gripper_token_accuracies))
+            if gripper_token_accuracies
+            else None
+        ),
         "per_dim_mae": np.mean(per_dim_abs_errors, axis=0).astype(float).tolist() if per_dim_abs_errors else None,
         "per_horizon_mae": np.mean(per_horizon_abs_errors, axis=0).astype(float).tolist() if per_horizon_abs_errors else None,
         "pred_min": float(np.min(pred_mins)) if pred_mins else None,
@@ -260,6 +335,12 @@ def main():
     print(f"  gripper_mae = {summary['gripper_mae']}")
     print(f"  gripper_mse = {summary['gripper_mse']}")
     print(f"  gripper_sign_match = {summary['gripper_sign_match']}")
+    print(f"  token_accuracy = {summary['token_accuracy']}")
+    print(f"  first_step_token_accuracy = {summary['first_step_token_accuracy']}")
+    print(f"  first_step_exact_match = {summary['first_step_exact_match']}")
+    print(f"  chunk_exact_match = {summary['chunk_exact_match']}")
+    print(f"  per_dim_token_accuracy = {summary['per_dim_token_accuracy']}")
+    print(f"  gripper_token_accuracy = {summary['gripper_token_accuracy']}")
     print(f"  per_dim_mae = {summary['per_dim_mae']}")
     print(f"  per_horizon_mae = {summary['per_horizon_mae']}")
     print(f"  pred_min/max = {summary['pred_min']}/{summary['pred_max']}")
@@ -271,7 +352,11 @@ def main():
                 f"    {file_key}: n={stats['num_samples']} "
                 f"mae={stats['mae']:.6f} "
                 f"motion_mae={stats['motion_mae']:.6f} "
-                f"gripper_mae={stats['gripper_mae']}"
+                f"gripper_mae={stats['gripper_mae']} "
+                f"token_acc={stats['token_accuracy']:.6f} "
+                f"first_exact={stats['first_step_exact_match']:.6f} "
+                f"chunk_exact={stats['chunk_exact_match']:.6f} "
+                f"gripper_token_acc={stats['gripper_token_accuracy']}"
             )
 
     if args.output_json:
