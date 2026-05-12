@@ -185,8 +185,117 @@ def test_compute_visual_cot_loss_with_offset_codes():
     print("✓ visual CoT loss offset-code path verified")
 
 
+def test_depth_transformer_can_be_trainable_independently():
+    rqvae = torch.nn.Linear(2, 2)
+    rqtransformer = torch.nn.Linear(2, 2)
+
+    rqvae.requires_grad_(False)
+    rqtransformer.requires_grad_(True)
+
+    assert not any(param.requires_grad for param in rqvae.parameters())
+    assert all(param.requires_grad for param in rqtransformer.parameters())
+    print("✓ depth transformer trainability can be independent from RQVAE")
+
+
+def test_visual_cot_loss_updates_rqtransformer_parameters():
+    class TrainableRQTransformer(torch.nn.Module):
+        def __init__(self, hidden_size, vocab_size):
+            super().__init__()
+            self.proj = torch.nn.Linear(hidden_size, vocab_size)
+
+        def forward(self, embed_from_body, code, model_aux=None):
+            logits = self.proj(embed_from_body)
+            return logits.unsqueeze(2).expand(-1, -1, code.shape[-1], -1)
+
+    codes = torch.tensor([[[[0, 1], [2, 3]], [[1, 2], [3, 4]]]], dtype=torch.long)
+    image_tokens = 4
+    hidden_size = 6
+    vocab_size = 8
+    subgoal_hidden_states = torch.randn(1, image_tokens, hidden_size, requires_grad=True)
+    subgoal_images = torch.randn(1, 3, 8, 8)
+    vision_tower = FakeVisionTower(codes, vocab_size)
+    vision_tower.vision_tower.rqvaesiglip.requires_grad_(False)
+    vision_tower.vision_tower.rqtransformer = TrainableRQTransformer(hidden_size, vocab_size)
+    core_model = FakeCoreModel(vision_tower)
+
+    loss = compute_visual_cot_loss(core_model, subgoal_hidden_states, subgoal_images)
+    loss.backward()
+
+    grads = [
+        param.grad
+        for param in vision_tower.vision_tower.rqtransformer.parameters()
+        if param.requires_grad
+    ]
+    assert grads
+    assert all(grad is not None and torch.isfinite(grad).all() for grad in grads)
+    print("✓ visual CoT loss updates RQTransformer parameters")
+
+
+def test_freeze_patch_keeps_depth_transformer_trainable():
+    from vila_u.model.multimodal_encoder.rqvaesigliptransformer_encoder import (
+        RQVAESIGLIPTransformerVisionTower,
+    )
+
+    class FakeMetaModel(torch.nn.Module):
+        def __init__(self, vision_tower):
+            super().__init__()
+            self.vision_tower = vision_tower
+            self.config = type(
+                "Config",
+                (),
+                {
+                    "tune_language_model": True,
+                    "tune_vision_tower": False,
+                    "tune_depth_transformer": True,
+                    "tune_mm_projector": True,
+                },
+            )()
+
+        def get_llm(self):
+            return None
+
+        def get_vision_tower(self):
+            return self.vision_tower
+
+        def get_mm_projector(self):
+            return None
+
+    class FakeRQVAESIGLIP(torch.nn.Module):
+        pass
+
+    class FakeRQTransformer(torch.nn.Module):
+        pass
+
+    class FakeInner(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.rqvaesiglip = FakeRQVAESIGLIP()
+            self.rqtransformer = FakeRQTransformer()
+
+    class FakeRQVisionTower(RQVAESIGLIPTransformerVisionTower):
+        def __init__(self):
+            torch.nn.Module.__init__(self)
+            self.vision_tower = FakeInner()
+
+    model = FakeMetaModel(FakeRQVisionTower())
+    model.train()
+    type(model).freezed_module_patch = __import__(
+        "vila_u.model.vila_u_arch",
+        fromlist=["VILAUMetaModel"],
+    ).VILAUMetaModel.freezed_module_patch
+
+    model.freezed_module_patch()
+
+    assert not model.vision_tower.vision_tower.rqvaesiglip.training
+    assert model.vision_tower.vision_tower.rqtransformer.training
+    print("✓ freeze patch keeps depth transformer in train mode")
+
+
 if __name__ == "__main__":
     test_causal_attention_mask_4d()
     test_insert_subgoal_embeds_before_action_block()
     test_compute_visual_cot_loss_with_fake_rqtransformer()
     test_compute_visual_cot_loss_with_offset_codes()
+    test_depth_transformer_can_be_trainable_independently()
+    test_visual_cot_loss_updates_rqtransformer_parameters()
+    test_freeze_patch_keeps_depth_transformer_trainable()

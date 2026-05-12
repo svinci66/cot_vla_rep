@@ -34,6 +34,7 @@ from vila_u.constants import (
 )
 from vila_u.utils.action_tokenizer import (
     actions_to_token_ids,
+    compute_percentile_action_bin_edges,
     compute_selected_token_logits,
     select_action_token_ids,
     token_ids_to_bins,
@@ -119,6 +120,22 @@ class ActionPredictionArguments:
         default=1.0,
         metadata={"help": "Weight for discrete action token loss"}
     )
+    use_action_percentile_bins: bool = field(
+        default=True,
+        metadata={"help": "Use per-dimension action bin edges from training-set percentiles"}
+    )
+    action_bin_low_percentile: float = field(
+        default=1.0,
+        metadata={"help": "Lower percentile for per-dimension action bin edges"}
+    )
+    action_bin_high_percentile: float = field(
+        default=99.0,
+        metadata={"help": "Upper percentile for per-dimension action bin edges"}
+    )
+    tune_depth_transformer: bool = field(
+        default=True,
+        metadata={"help": "Train VILA-U RQTransformer/depth transformer while keeping RQVAE/SigLIP frozen"}
+    )
 
 
 class ActionPredictionDataCollator:
@@ -177,6 +194,7 @@ class DiscreteActionPredictionDataCollator:
         action_chunk_size: int,
         action_dim: int,
         use_hybrid_attention: bool,
+        action_bin_edges=None,
     ):
         self.tokenizer = tokenizer
         self.model_max_length = model_max_length
@@ -185,6 +203,7 @@ class DiscreteActionPredictionDataCollator:
         self.action_slot_token_id = action_slot_token_id
         self.num_action_tokens = action_chunk_size * action_dim
         self.use_hybrid_attention = use_hybrid_attention
+        self.action_bin_edges = action_bin_edges
 
     def __call__(self, batch):
         images = torch.stack([item["observations"] for item in batch])
@@ -203,10 +222,11 @@ class DiscreteActionPredictionDataCollator:
                 add_generation_prompt=True,
             )
             action_token_ids = actions_to_token_ids(
-                action.view(-1),
+                action,
                 self.action_token_ids,
                 num_bins=ACTION_NUM_BINS,
-            )
+                bin_edges=self.action_bin_edges,
+            ).view(-1)
             if self.use_hybrid_attention:
                 action_input_ids = torch.full_like(
                     action_token_ids,
@@ -615,6 +635,57 @@ def compute_visual_cot_loss(
     )
 
 
+def compute_dataset_action_bin_edges(train_dataset, data_args: ActionPredictionArguments):
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        rank = torch.distributed.get_rank()
+        backend = torch.distributed.get_backend()
+        device = torch.device("cuda", torch.cuda.current_device()) if backend == "nccl" else torch.device("cpu")
+        if rank == 0:
+            action_bin_edges = _compute_dataset_action_bin_edges_local(train_dataset, data_args).to(device)
+        else:
+            action_bin_edges = torch.empty(
+                data_args.action_dim,
+                ACTION_NUM_BINS + 1,
+                dtype=torch.float32,
+                device=device,
+            )
+        torch.distributed.broadcast(action_bin_edges, src=0)
+        return action_bin_edges.cpu()
+
+    return _compute_dataset_action_bin_edges_local(train_dataset, data_args)
+
+
+def _compute_dataset_action_bin_edges_local(train_dataset, data_args: ActionPredictionArguments):
+    action_chunks = []
+    for sample in train_dataset.samples:
+        with torch.no_grad():
+            import h5py
+            with h5py.File(sample['file'], 'r') as h5_file:
+                demo = h5_file['data'][sample['demo']]
+                if data_args.remove_pause_intervals:
+                    non_pause_indices = sample['non_pause_indices']
+                    filtered_t = sample['filtered_timestep']
+                    action_indices = non_pause_indices[
+                        filtered_t : filtered_t + data_args.action_chunk_size
+                    ]
+                    actions = demo['actions'][action_indices]
+                else:
+                    timestep = sample['timestep']
+                    actions = demo['actions'][timestep : timestep + data_args.action_chunk_size]
+        action_chunks.append(torch.as_tensor(actions, dtype=torch.float32))
+
+    if not action_chunks:
+        raise ValueError("Cannot compute action bin edges from an empty dataset")
+
+    all_actions = torch.cat(action_chunks, dim=0).clamp(-1.0, 1.0)
+    return compute_percentile_action_bin_edges(
+        all_actions,
+        num_bins=ACTION_NUM_BINS,
+        low_percentile=data_args.action_bin_low_percentile,
+        high_percentile=data_args.action_bin_high_percentile,
+    )
+
+
 def make_action_prediction_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args: ActionPredictionArguments,
@@ -623,6 +694,7 @@ def make_action_prediction_data_module(
     mm_use_im_start_end: bool,
     action_token_ids,
     action_slot_token_id: int | None,
+    action_bin_edges=None,
 ) -> Dict:
     """Create data module for action prediction training"""
     from vila_u.data.libero_dataset_v2 import LiberoGoalDataset
@@ -642,9 +714,13 @@ def make_action_prediction_data_module(
     )
     training_args.sample_lens = [len(train_dataset)]
 
+    if data_args.use_discrete_action_prediction and data_args.use_action_percentile_bins and action_bin_edges is None:
+        action_bin_edges = compute_dataset_action_bin_edges(train_dataset, data_args)
+
     return dict(
         train_dataset=train_dataset,
         eval_dataset=None,
+        action_bin_edges=action_bin_edges,
         data_collator=(
             DiscreteActionPredictionDataCollator(
                 tokenizer=tokenizer,
@@ -655,6 +731,7 @@ def make_action_prediction_data_module(
                 action_chunk_size=data_args.action_chunk_size,
                 action_dim=data_args.action_dim,
                 use_hybrid_attention=data_args.use_hybrid_attention,
+                action_bin_edges=action_bin_edges,
             )
             if data_args.use_discrete_action_prediction
             else ActionPredictionDataCollator(
@@ -740,6 +817,10 @@ def train():
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
     config.action_num_bins = ACTION_NUM_BINS
+    config.use_action_percentile_bins = action_args.use_action_percentile_bins
+    config.action_bin_low_percentile = action_args.action_bin_low_percentile
+    config.action_bin_high_percentile = action_args.action_bin_high_percentile
+    config.tune_depth_transformer = action_args.tune_depth_transformer
     attn_implementation = os.environ.get("ATTN_IMPLEMENTATION", "flash_attention_2")
     if action_args.use_hybrid_attention and attn_implementation == "flash_attention_2":
         attn_implementation = "eager"
@@ -763,15 +844,19 @@ def train():
         model.get_vision_tower().requires_grad_(training_args.tune_vision_tower)
         model.get_mm_projector().requires_grad_(training_args.tune_mm_projector)
         if isinstance(model.get_vision_tower(), RQVAESIGLIPTransformerVisionTower):
+            model.get_vision_tower().vision_tower.rqvaesiglip.requires_grad_(False)
             model.get_vision_tower().vision_tower.rqvaesiglip.eval()
             model.get_vision_tower().vision_tower.rqtransformer.requires_grad_(
-                training_args.tune_vision_tower
+                action_args.tune_depth_transformer
             )
-            if not training_args.tune_vision_tower:
+            if action_args.tune_depth_transformer:
+                model.get_vision_tower().vision_tower.rqtransformer.train()
+            else:
                 model.get_vision_tower().vision_tower.rqtransformer.eval()
         else:
             raise NotImplementedError()
         print(f"vision tower {training_args.tune_vision_tower}")
+        print(f"depth transformer {action_args.tune_depth_transformer}")
         print(f"mm projector {training_args.tune_mm_projector}")
 
     # Action head is always trainable
@@ -782,6 +867,7 @@ def train():
     if not any([
         training_args.tune_language_model,
         training_args.tune_vision_tower,
+        action_args.tune_depth_transformer,
         training_args.tune_mm_projector,
         hasattr(model, 'action_head')
     ]):
@@ -876,6 +962,18 @@ def train():
         action_token_ids=action_token_ids,
         action_slot_token_id=action_slot_token_id,
     )
+
+    action_bin_edges = data_module.pop("action_bin_edges", None)
+    if action_bin_edges is not None:
+        model.config.action_bin_edges = action_bin_edges.cpu().tolist()
+        model.config.action_bin_low_percentile = action_args.action_bin_low_percentile
+        model.config.action_bin_high_percentile = action_args.action_bin_high_percentile
+        model.config.use_action_percentile_bins = action_args.use_action_percentile_bins
+        print(
+            "action percentile bins "
+            f"{action_args.action_bin_low_percentile}-{action_args.action_bin_high_percentile}: "
+            f"shape={tuple(action_bin_edges.shape)}"
+        )
 
     # Custom trainer for action prediction
     trainer = ActionPredictionTrainer(

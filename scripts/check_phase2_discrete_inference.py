@@ -236,9 +236,11 @@ def main():
     allowed_ids = set(action_token_ids)
     all_valid = all(int(token_id) in allowed_ids for token_id in generated_action_ids.view(-1).tolist())
     decoded_actions = token_ids_to_actions(
-        generated_action_ids,
+        generated_action_ids.view(1, model.config.action_chunk_size, model.config.action_dim),
         action_token_ids,
-    ).view(model.config.action_chunk_size, model.config.action_dim)
+        num_bins=getattr(model.config, "action_num_bins", 256),
+        bin_edges=getattr(model.config, "action_bin_edges", None),
+    ).squeeze(0)
     max_diff = float((decoded_actions - actions).abs().max())
 
     print(f"  generated token shape = {tuple(generated_action_ids.shape)}")

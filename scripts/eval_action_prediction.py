@@ -23,14 +23,15 @@ from vila_u.constants import (
 from vila_u.utils.tokenizer import tokenize_conversation
 from vila_u.utils.action_tokenizer import (
     actions_to_token_ids,
-    token_ids_to_actions,
+    token_ids_to_bins,
+    undiscretize_action_bins,
     compute_selected_token_logits,
     select_action_token_ids,
 )
 from vila_u.utils.hybrid_attention import build_hybrid_attention_mask
 
 
-def collate_fn_discrete(batch, tokenizer, mm_use_im_start_end, action_token_ids, action_slot_token_id, num_action_tokens):
+def collate_fn_discrete(batch, tokenizer, mm_use_im_start_end, action_token_ids, action_slot_token_id, num_action_tokens, action_bin_edges=None):
     """离散动作预测的collate函数"""
     images = torch.stack([item["observation"] for item in batch])
     actions = torch.stack([item["action_labels"] for item in batch])
@@ -52,10 +53,11 @@ def collate_fn_discrete(batch, tokenizer, mm_use_im_start_end, action_token_ids,
 
         # 转换动作为token IDs
         action_token_ids_flat = actions_to_token_ids(
-            action.view(-1),
+            action,
             action_token_ids,
             num_bins=ACTION_NUM_BINS,
-        )
+            bin_edges=action_bin_edges,
+        ).view(-1)
 
         # 构建输入：prompt + action slots
         action_input_ids = torch.full_like(action_token_ids_flat, action_slot_token_id)
@@ -130,7 +132,7 @@ def evaluate(args):
         shuffle=False,
         num_workers=0,
         collate_fn=lambda batch: collate_fn_discrete(
-            batch, tokenizer, True, action_token_ids, action_slot_token_id, num_action_tokens
+            batch, tokenizer, True, action_token_ids, action_slot_token_id, num_action_tokens, getattr(model.config, "action_bin_edges", None)
         ),
     )
 
@@ -179,12 +181,15 @@ def evaluate(args):
             true_token_ids = labels[action_mask]
 
             # Token准确率
-            token_acc = (pred_bins == token_ids_to_bins(true_token_ids, action_token_ids, ACTION_NUM_BINS)).float().mean()
+            token_acc = (pred_bins == token_ids_to_bins(true_token_ids, action_token_ids)).float().mean()
             all_token_accuracy.append(token_acc.item())
 
             # 转换为连续动作并计算MSE
-            pred_actions = token_ids_to_actions(pred_bins, action_token_ids, ACTION_NUM_BINS)
-            pred_actions = pred_actions.view(true_actions.shape)
+            pred_actions = undiscretize_action_bins(
+                pred_bins.view(true_actions.shape),
+                num_bins=ACTION_NUM_BINS,
+                bin_edges=getattr(model.config, "action_bin_edges", None),
+            )
 
             mse = torch.nn.functional.mse_loss(pred_actions, true_actions)
             all_action_mse.append(mse.item())

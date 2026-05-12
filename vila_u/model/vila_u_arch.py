@@ -37,6 +37,7 @@ from vila_u.utils.action_tokenizer import (
     AllowedActionTokensLogitsProcessor,
     bins_to_token_ids,
     compute_selected_token_logits,
+    token_ids_to_bins,
     token_ids_to_actions,
 )
 
@@ -239,7 +240,15 @@ class VILAUMetaModel(ABC):
             if self.get_llm() and not getattr(self.config, "tune_language_model", False):
                 logging.warning("Caution: Your LLM is currently in training mode, ensuring accurate gradient computation. Please be vigilant, particularly regarding BatchNorm and Dropout operations.")
             if self.get_vision_tower() and not getattr(self.config, "tune_vision_tower", False):
-                self.get_vision_tower().eval()
+                vision_tower = self.get_vision_tower()
+                if isinstance(vision_tower, RQVAESIGLIPTransformerVisionTower):
+                    vision_tower.vision_tower.rqvaesiglip.eval()
+                    if getattr(self.config, "tune_depth_transformer", False):
+                        vision_tower.vision_tower.rqtransformer.train()
+                    else:
+                        vision_tower.vision_tower.rqtransformer.eval()
+                else:
+                    vision_tower.eval()
             if self.get_mm_projector() and not getattr(self.config, "tune_mm_projector", False):
                 self.get_mm_projector().eval()
     
@@ -801,6 +810,7 @@ class VILAUMetaForCausalLM(ABC):
         image_processor=None,
         subgoal_image=None,
         subgoal_embeds: Optional[torch.Tensor] = None,
+        return_debug: bool = False,
     ) -> torch.Tensor:
         """
         从单个观察图像和语言指令预测动作序列（推理接口）。
@@ -1005,8 +1015,26 @@ class VILAUMetaForCausalLM(ABC):
                     logits_processor=[AllowedActionTokensLogitsProcessor(action_token_ids)],
                 )
                 generated_action_ids = output_ids[:, -num_action_tokens:]
-            actions = token_ids_to_actions(generated_action_ids, action_token_ids)
-            return actions.view(1, self.config.action_chunk_size, self.config.action_dim).squeeze(0)
+                predicted_bins = token_ids_to_bins(generated_action_ids, action_token_ids)
+            action_token_shape = (
+                generated_action_ids.shape[0],
+                self.config.action_chunk_size,
+                self.config.action_dim,
+            )
+            actions = token_ids_to_actions(
+                generated_action_ids.view(action_token_shape),
+                action_token_ids,
+                num_bins=getattr(self.config, "action_num_bins", 256),
+                bin_edges=getattr(self.config, "action_bin_edges", None),
+            )
+            actions = actions.squeeze(0)
+            if return_debug:
+                return {
+                    "actions": actions,
+                    "predicted_bins": predicted_bins.view(action_token_shape).squeeze(0),
+                    "action_token_ids": generated_action_ids.view(action_token_shape).squeeze(0),
+                }
+            return actions
 
         # 3. 前向传播获取隐层状态
         outputs = self(
@@ -1024,7 +1052,10 @@ class VILAUMetaForCausalLM(ABC):
         actions = self.predict_actions(hidden_states, attention_mask=attention_mask)  # [1, chunk_size, action_dim]
 
         # 返回单个样本的动作
-        return actions.squeeze(0)  # [chunk_size, action_dim]
+        actions = actions.squeeze(0)  # [chunk_size, action_dim]
+        if return_debug:
+            return {"actions": actions}
+        return actions
 
     @torch.no_grad()
     def generate_visual_cot_subgoal(
@@ -1198,6 +1229,7 @@ class VILAUMetaForCausalLM(ABC):
         image_processor=None,
         cfg: float = 3.0,
         return_subgoal: bool = False,
+        return_debug: bool = False,
     ):
         subgoal_embeds, subgoal_codes, subgoal_image = self.generate_visual_cot_subgoal(
             image=image,
@@ -1211,7 +1243,13 @@ class VILAUMetaForCausalLM(ABC):
             instruction=instruction,
             image_processor=image_processor,
             subgoal_embeds=subgoal_embeds,
+            return_debug=return_debug,
         )
+        if return_debug:
+            actions["generated_subgoal_codes"] = subgoal_codes
+            if return_subgoal:
+                actions["generated_subgoal_image"] = subgoal_image
+            return actions
         if return_subgoal:
             return actions, subgoal_image, subgoal_codes
         return actions

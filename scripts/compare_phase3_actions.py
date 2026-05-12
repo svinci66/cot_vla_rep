@@ -124,10 +124,11 @@ def main():
     ).cpu()
 
     gt_action_tokens = actions_to_token_ids(
-        gt_actions.view(-1),
+        gt_actions,
         model.config.action_token_ids,
         num_bins=ACTION_NUM_BINS,
-    ).view(model.config.action_chunk_size, model.config.action_dim)
+        bin_edges=getattr(model.config, "action_bin_edges", None),
+    )
 
     prompt = build_prompt(model, sample["instruction"])
     input_ids = tokenize_conversation(

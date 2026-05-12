@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--init-state-offset", type=int, default=0)
     parser.add_argument("--output-json", default=None)
+    parser.add_argument("--output-dir", default=None, help="Optional directory for auto-named rollout summary JSON.")
     parser.add_argument("--mujoco-gl", default=os.environ.get("MUJOCO_GL", "egl"))
     parser.add_argument("--request-timeout-ms", type=int, default=120000)
     parser.add_argument("--save-failures", action="store_true", help="Save per-episode final info even for failures.")
@@ -118,6 +119,14 @@ def main() -> None:
     print(f"instruction: {instruction}")
     print(f"episodes: {args.episodes}, max_steps: {args.max_steps}")
     print(f"bddl_file: {bddl_file}")
+    if args.output_json is None and args.output_dir:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_dir = Path(args.output_dir)
+        args.output_json = str(
+            output_dir / f"{args.suite}_task{args.task_id}_seed{args.seed}_{timestamp}_summary.json"
+        )
+    if args.output_json:
+        print(f"output_json: {args.output_json}")
 
     # Lightweight readiness handshake.
     socket.send(pack({"type": "hello", "suite": args.suite, "task_id": args.task_id}))

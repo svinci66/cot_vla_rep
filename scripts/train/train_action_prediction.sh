@@ -28,6 +28,9 @@ IMAGE_ASPECT_RATIO=${IMAGE_ASPECT_RATIO:-"resize"}
 IMAGE_SIZE=${IMAGE_SIZE:-256}
 ACTION_CHUNK_SIZE=${ACTION_CHUNK_SIZE:-10}
 ACTION_DIM=${ACTION_DIM:-7}
+USE_ACTION_PERCENTILE_BINS=${USE_ACTION_PERCENTILE_BINS:-True}
+ACTION_BIN_LOW_PERCENTILE=${ACTION_BIN_LOW_PERCENTILE:-1.0}
+ACTION_BIN_HIGH_PERCENTILE=${ACTION_BIN_HIGH_PERCENTILE:-99.0}
 REMOVE_PAUSE_INTERVALS=${REMOVE_PAUSE_INTERVALS:-True}
 PAUSE_THRESHOLD=${PAUSE_THRESHOLD:-0.01}
 REPORT_TO=${REPORT_TO:-wandb}
@@ -40,6 +43,7 @@ USE_DEEPSPEED=${USE_DEEPSPEED:-False}
 USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
 USE_VISUAL_COT=${USE_VISUAL_COT:-False}
 USE_VISUAL_COT_LOSS=${USE_VISUAL_COT_LOSS:-False}
+TUNE_DEPTH_TRANSFORMER=${TUNE_DEPTH_TRANSFORMER:-True}
 VISUAL_LOSS_WEIGHT=${VISUAL_LOSS_WEIGHT:-1.0}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-1.0}
 SUBGOAL_MIN_OFFSET=${SUBGOAL_MIN_OFFSET:-1}
@@ -203,6 +207,7 @@ echo "  Gradient Checkpointing: $GRADIENT_CHECKPOINTING"
 echo "  Effective Batch Size: $effective_bs"
 echo "  Image Size: $IMAGE_SIZE"
 echo "  Action Chunk Size: $ACTION_CHUNK_SIZE"
+echo "  Action Percentile Bins: $USE_ACTION_PERCENTILE_BINS ($ACTION_BIN_LOW_PERCENTILE-$ACTION_BIN_HIGH_PERCENTILE)"
 echo "  Suppress FutureWarning: $SUPPRESS_FUTURE_WARNING"
 echo "  Attention Backend: $ATTN_IMPLEMENTATION"
 echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
@@ -210,6 +215,7 @@ echo "  Use DeepSpeed: $USE_DEEPSPEED"
 echo "  Use Hybrid Attention: $USE_HYBRID_ATTENTION"
 echo "  Use Visual CoT Subgoal Sampling: $USE_VISUAL_COT"
 echo "  Use Visual CoT Loss: $USE_VISUAL_COT_LOSS"
+echo "  Tune Depth Transformer: $TUNE_DEPTH_TRANSFORMER"
 echo "  Visual Loss Weight: $VISUAL_LOSS_WEIGHT"
 echo "  Action Loss Weight: $ACTION_LOSS_WEIGHT"
 echo "  Subgoal Offset Range: $SUBGOAL_MIN_OFFSET-$SUBGOAL_MAX_OFFSET"
@@ -258,6 +264,7 @@ train_args=(
     --use_hybrid_attention "$USE_HYBRID_ATTENTION"
     --use_visual_cot "$USE_VISUAL_COT"
     --use_visual_cot_loss "$USE_VISUAL_COT_LOSS"
+    --tune_depth_transformer "$TUNE_DEPTH_TRANSFORMER"
     --visual_loss_weight "$VISUAL_LOSS_WEIGHT"
     --action_loss_weight "$ACTION_LOSS_WEIGHT"
     --subgoal_min_offset "$SUBGOAL_MIN_OFFSET"
@@ -265,6 +272,9 @@ train_args=(
     --subgoal_sampling_strategy "$SUBGOAL_SAMPLING_STRATEGY"
     --action_chunk_size "$ACTION_CHUNK_SIZE"
     --action_dim "$ACTION_DIM"
+    --use_action_percentile_bins "$USE_ACTION_PERCENTILE_BINS"
+    --action_bin_low_percentile "$ACTION_BIN_LOW_PERCENTILE"
+    --action_bin_high_percentile "$ACTION_BIN_HIGH_PERCENTILE"
     --remove_pause_intervals "$REMOVE_PAUSE_INTERVALS"
     --pause_threshold "$PAUSE_THRESHOLD"
 )

@@ -100,9 +100,98 @@ def test_compute_selected_token_logits():
     print("✓ selected-token logits match sliced full-vocab logits")
 
 
+def test_percentile_action_bin_edges_roundtrip():
+    from vila_u.utils.action_tokenizer import (
+        actions_to_token_ids,
+        compute_percentile_action_bin_edges,
+        discretize_actions,
+        token_ids_to_actions,
+    )
+
+    actions = torch.tensor(
+        [
+            [-2.0, -0.5, 0.0],
+            [-1.0, 0.0, 0.2],
+            [0.0, 0.5, 0.4],
+            [1.0, 1.0, 0.6],
+            [2.0, 1.5, 0.8],
+        ]
+    )
+    edges = compute_percentile_action_bin_edges(
+        actions,
+        num_bins=8,
+        low_percentile=0.0,
+        high_percentile=100.0,
+    )
+    bins = discretize_actions(actions, num_bins=8, bin_edges=edges)
+    token_ids = actions_to_token_ids(actions, list(range(100, 108)), num_bins=8, bin_edges=edges)
+    restored = token_ids_to_actions(token_ids, list(range(100, 108)), num_bins=8, bin_edges=edges)
+
+    assert tuple(edges.shape) == (3, 9)
+    assert bins.shape == actions.shape
+    assert token_ids.shape == actions.shape
+    assert restored.shape == actions.shape
+    assert torch.all(restored[:, 0] >= edges[0, 0])
+    assert torch.all(restored[:, 0] <= edges[0, -1])
+    print("✓ percentile per-dim action bin edges roundtrip verified")
+
+
+def test_percentile_token_decode_preserves_action_shape():
+    from vila_u.utils.action_tokenizer import actions_to_token_ids, token_ids_to_actions
+
+    actions = torch.tensor(
+        [
+            [
+                [-1.0, 0.0, 1.0],
+                [-0.5, 0.5, 0.75],
+            ]
+        ],
+        dtype=torch.float32,
+    )
+    edges = torch.tensor(
+        [
+            [-1.0, -0.5, 0.0, 0.5, 1.0],
+            [-1.0, -0.25, 0.25, 0.75, 1.0],
+            [-1.0, 0.0, 0.5, 0.75, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    action_token_ids = list(range(200, 204))
+
+    token_ids = actions_to_token_ids(actions, action_token_ids, num_bins=4, bin_edges=edges)
+    restored = token_ids_to_actions(token_ids, action_token_ids, num_bins=4, bin_edges=edges)
+
+    assert token_ids.shape == actions.shape
+    assert restored.shape == actions.shape
+    assert restored[0, 0, 0] != restored[0, 0, 1]
+    print("✓ percentile token decoding preserves chunk/action-dim shape")
+
+
+def test_config_stores_action_bin_edges():
+    from vila_u.model.configuration_vila_u import VILAUConfig
+
+    edges = [[-1.0, 0.0, 1.0], [-0.5, 0.5, 1.5]]
+    config = VILAUConfig(
+        action_num_bins=2,
+        action_bin_edges=edges,
+        use_action_percentile_bins=True,
+        action_bin_low_percentile=1.0,
+        action_bin_high_percentile=99.0,
+    )
+
+    assert config.action_bin_edges == edges
+    assert config.use_action_percentile_bins is True
+    assert config.action_bin_low_percentile == 1.0
+    assert config.action_bin_high_percentile == 99.0
+    print("✓ action bin edges stored in config")
+
+
 if __name__ == "__main__":
     test_select_action_token_ids()
     test_discretize_and_undiscretize()
     test_action_token_roundtrip()
+    test_percentile_action_bin_edges_roundtrip()
+    test_percentile_token_decode_preserves_action_shape()
+    test_config_stores_action_bin_edges()
     test_allowed_action_token_logits_processor()
     test_compute_selected_token_logits()

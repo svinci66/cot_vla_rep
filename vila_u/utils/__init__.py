@@ -5,6 +5,8 @@ from .action_tokenizer import (
     AllowedActionTokensLogitsProcessor,
     actions_to_token_ids,
     bins_to_token_ids,
+    build_uniform_action_bin_edges,
+    compute_percentile_action_bin_edges,
     compute_selected_token_logits,
     discretize_actions,
     select_action_token_ids,
