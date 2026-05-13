@@ -29,6 +29,7 @@ from vila_u.constants import (
     DEFAULT_IMAGE_TOKEN,
     DEFAULT_IM_START_TOKEN,
     DEFAULT_IM_END_TOKEN,
+    DEFAULT_ACTION_SLOT_TOKEN,
     ACTION_NUM_BINS,
     IGNORE_INDEX,
 )
@@ -485,6 +486,31 @@ def smart_tokenizer_and_embedding_resize(
 
         input_embeddings[-num_new_tokens:] = input_embeddings_avg
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
+
+
+def initialize_action_slot_token(tokenizer, model) -> int:
+    """Add a dedicated action placeholder token that is separate from action bin tokens."""
+    token_id = tokenizer.convert_tokens_to_ids(DEFAULT_ACTION_SLOT_TOKEN)
+    if token_id is None or token_id == getattr(tokenizer, "unk_token_id", None):
+        num_new_tokens = tokenizer.add_tokens([DEFAULT_ACTION_SLOT_TOKEN], special_tokens=True)
+        model.resize_token_embeddings(len(tokenizer))
+        if num_new_tokens > 0:
+            input_embeddings = model.get_input_embeddings().weight.data
+            output_embeddings = model.get_output_embeddings().weight.data
+
+            input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(
+                dim=0, keepdim=True
+            )
+            output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(
+                dim=0, keepdim=True
+            )
+
+            input_embeddings[-num_new_tokens:] = input_embeddings_avg
+            output_embeddings[-num_new_tokens:] = output_embeddings_avg
+    action_slot_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_ACTION_SLOT_TOKEN)
+    if action_slot_token_id is None or action_slot_token_id < 0:
+        raise ValueError(f"Failed to initialize action slot token: {DEFAULT_ACTION_SLOT_TOKEN}")
+    return int(action_slot_token_id)
 
 
 def insert_subgoal_embeds_before_action_block(
@@ -946,10 +972,12 @@ def train():
     action_token_ids = None
     action_slot_token_id = None
     if action_args.use_discrete_action_prediction:
+        action_slot_token_id = initialize_action_slot_token(tokenizer, model)
         action_token_ids = select_action_token_ids(tokenizer, num_bins=ACTION_NUM_BINS)
+        if action_slot_token_id in action_token_ids:
+            raise ValueError("Dedicated action slot token must not overlap action bin tokens")
         model.config.action_token_ids = action_token_ids
         model.config.action_num_bins = ACTION_NUM_BINS
-        action_slot_token_id = action_token_ids[0]
         model.config.action_slot_token_id = action_slot_token_id
 
     # Create data module for action prediction

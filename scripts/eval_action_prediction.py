@@ -18,6 +18,7 @@ from vila_u.constants import (
     DEFAULT_IMAGE_TOKEN,
     DEFAULT_IM_START_TOKEN,
     DEFAULT_IM_END_TOKEN,
+    DEFAULT_ACTION_SLOT_TOKEN,
     ACTION_NUM_BINS,
 )
 from vila_u.utils.tokenizer import tokenize_conversation
@@ -110,7 +111,11 @@ def evaluate(args):
 
     # 获取action token IDs
     action_token_ids = select_action_token_ids(tokenizer, ACTION_NUM_BINS)
-    action_slot_token_id = tokenizer.convert_tokens_to_ids("<action>")
+    action_slot_token_id = getattr(model.config, "action_slot_token_id", None)
+    if action_slot_token_id is None:
+        action_slot_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_ACTION_SLOT_TOKEN)
+    if action_slot_token_id is None or action_slot_token_id < 0:
+        raise ValueError("Checkpoint does not define a valid action slot token")
     num_action_tokens = args.action_chunk_size * args.action_dim
 
     # 2. 加载数据集

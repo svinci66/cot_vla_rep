@@ -22,3 +22,4 @@ ACTION_HORIZON = 10         # 动作预测的时间跨度
 ACTION_NUM_BINS = 256       # Phase 2: 每个动作维度离散化 bin 数
 ACTION_MIN = -1.0           # 动作归一化最小值
 ACTION_MAX = 1.0            # 动作归一化最大值
+DEFAULT_ACTION_SLOT_TOKEN = "<action_slot>"
