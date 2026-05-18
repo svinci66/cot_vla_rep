@@ -44,6 +44,9 @@ USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
 USE_VISUAL_COT=${USE_VISUAL_COT:-False}
 USE_VISUAL_COT_LOSS=${USE_VISUAL_COT_LOSS:-False}
 TUNE_DEPTH_TRANSFORMER=${TUNE_DEPTH_TRANSFORMER:-True}
+TUNE_LANGUAGE_MODEL=${TUNE_LANGUAGE_MODEL:-True}
+TUNE_MM_PROJECTOR=${TUNE_MM_PROJECTOR:-True}
+TUNE_VISION_TOWER=${TUNE_VISION_TOWER:-False}
 VISUAL_LOSS_WEIGHT=${VISUAL_LOSS_WEIGHT:-1.0}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-1.0}
 SUBGOAL_MIN_OFFSET=${SUBGOAL_MIN_OFFSET:-1}
@@ -217,6 +220,9 @@ echo "  Use Hybrid Attention: $USE_HYBRID_ATTENTION"
 echo "  Use Visual CoT Subgoal Sampling: $USE_VISUAL_COT"
 echo "  Use Visual CoT Loss: $USE_VISUAL_COT_LOSS"
 echo "  Tune Depth Transformer: $TUNE_DEPTH_TRANSFORMER"
+echo "  Tune Language Model: $TUNE_LANGUAGE_MODEL"
+echo "  Tune MM Projector: $TUNE_MM_PROJECTOR"
+echo "  Tune Vision Tower: $TUNE_VISION_TOWER"
 echo "  Visual Loss Weight: $VISUAL_LOSS_WEIGHT"
 echo "  Action Loss Weight: $ACTION_LOSS_WEIGHT"
 echo "  Subgoal Offset Range: $SUBGOAL_MIN_OFFSET-$SUBGOAL_MAX_OFFSET"
@@ -233,9 +239,9 @@ train_args=(
     --data_root "$DATA_ROOT"
     --version v1
     --mm_projector mlp2x_gelu
-    --tune_mm_projector True
-    --tune_language_model True
-    --tune_vision_tower False
+    --tune_mm_projector "$TUNE_MM_PROJECTOR"
+    --tune_language_model "$TUNE_LANGUAGE_MODEL"
+    --tune_vision_tower "$TUNE_VISION_TOWER"
     --mm_vision_select_layer -2
     --mm_use_im_start_end True
     --mm_use_vi_start_end False
