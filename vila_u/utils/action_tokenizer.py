@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -57,13 +57,47 @@ def compute_selected_token_logits(
     return F.linear(hidden_states, weight, bias)
 
 
-def select_action_token_ids(tokenizer, num_bins: int = ACTION_NUM_BINS) -> list[int]:
-    """Select action tokens from the tail of the tokenizer vocabulary.
+def _get_tokenizer_vocab_scores(tokenizer) -> Mapping[int, float] | None:
+    """Return token frequency/rank scores when the tokenizer exposes them."""
+    explicit_scores = getattr(tokenizer, "action_token_frequency", None)
+    if explicit_scores is None:
+        explicit_scores = getattr(tokenizer, "token_frequency", None)
+    if explicit_scores is None and hasattr(tokenizer, "get_token_frequencies"):
+        explicit_scores = tokenizer.get_token_frequencies()
+    if explicit_scores is not None:
+        vocab = tokenizer.get_vocab()
+        scores = {}
+        for token_or_id, score in explicit_scores.items():
+            token_id = vocab.get(token_or_id, token_or_id)
+            try:
+                scores[int(token_id)] = float(score)
+            except (TypeError, ValueError):
+                continue
+        if scores:
+            return scores
 
-    The paper describes reusing low-frequency tokenizer tokens. Token usage
-    frequency is not directly exposed by Hugging Face tokenizers, so this uses
-    the standard tail-of-vocabulary heuristic: pick the highest-ID normal
-    tokens while excluding special tokens and explicitly added tokens.
+    backend_tokenizer = getattr(tokenizer, "backend_tokenizer", None)
+    model = getattr(backend_tokenizer, "model", None)
+    vocab_scores = getattr(model, "vocab_scores", None)
+    if vocab_scores:
+        vocab = tokenizer.get_vocab()
+        return {
+            int(token_id): float(vocab_scores[token])
+            for token, token_id in vocab.items()
+            if token in vocab_scores
+        }
+
+    return None
+
+
+def select_action_token_ids(tokenizer, num_bins: int = ACTION_NUM_BINS) -> list[int]:
+    """Select existing tokenizer tokens to repurpose as action bins.
+
+    CoT-VLA repurposes the 256 least frequently used text-tokenizer tokens as
+    action bin tokens. Some Hugging Face tokenizers do not expose corpus usage
+    frequencies, so the implementation first consumes explicit frequency/rank
+    metadata when available and otherwise falls back to the deterministic
+    tail-of-vocabulary heuristic used by many tokenizer training pipelines.
     """
 
     special_ids = set(getattr(tokenizer, "all_special_ids", []))
@@ -81,6 +115,18 @@ def select_action_token_ids(tokenizer, num_bins: int = ACTION_NUM_BINS) -> list[
         raise ValueError(
             f"Tokenizer only has {len(candidate_ids)} eligible tokens, need {num_bins}"
         )
+
+    vocab_scores = _get_tokenizer_vocab_scores(tokenizer)
+    if vocab_scores:
+        scored_candidate_ids = [
+            token_id for token_id in candidate_ids if token_id in vocab_scores
+        ]
+        if len(scored_candidate_ids) >= num_bins:
+            selected = sorted(
+                scored_candidate_ids,
+                key=lambda token_id: (vocab_scores[token_id], -token_id),
+            )[:num_bins]
+            return sorted(selected)
 
     return candidate_ids[-num_bins:]
 

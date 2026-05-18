@@ -34,6 +34,20 @@ def test_select_action_token_ids():
     print("✓ action token IDs selected from tokenizer tail")
 
 
+def test_select_action_token_ids_prefers_low_frequency_scores():
+    from vila_u.utils.action_tokenizer import select_action_token_ids
+
+    tokenizer = DummyTokenizer()
+    tokenizer.token_frequency = {
+        token_id: 1000.0 - token_id
+        for token_id in tokenizer.get_vocab().values()
+    }
+    action_token_ids = select_action_token_ids(tokenizer, num_bins=8)
+
+    assert action_token_ids == [3, 4, 5, 6, 7, 8, 9, 10]
+    print("✓ action token IDs selected from lowest exposed frequencies")
+
+
 def test_discretize_and_undiscretize():
     from vila_u.utils.action_tokenizer import (
         discretize_actions,
@@ -186,9 +200,8 @@ def test_config_stores_action_bin_edges():
     print("✓ action bin edges stored in config")
 
 
-def test_dedicated_action_slot_token_is_not_action_bin():
-    from vila_u.constants import DEFAULT_ACTION_SLOT_TOKEN
-    from vila_u.train.train_action_prediction_main import initialize_action_slot_token
+def test_reused_action_slot_token_is_not_action_bin():
+    from vila_u.train.train_action_prediction_main import select_action_slot_token_id
     from vila_u.utils.action_tokenizer import select_action_token_ids
 
     class TinyTokenizer(DummyTokenizer):
@@ -209,41 +222,24 @@ def test_dedicated_action_slot_token_is_not_action_bin():
                     num_added += 1
             return num_added
 
-    class TinyModel:
-        def __init__(self):
-            self.resize_calls = 0
-            self.input_embeddings = torch.nn.Embedding(1001, 4)
-            self.output_embeddings = torch.nn.Embedding(1001, 4)
-
-        def resize_token_embeddings(self, vocab_size):
-            self.resize_calls += 1
-            self.input_embeddings = torch.nn.Embedding(vocab_size, 4)
-            self.output_embeddings = torch.nn.Embedding(vocab_size, 4)
-
-        def get_input_embeddings(self):
-            return self.input_embeddings
-
-        def get_output_embeddings(self):
-            return self.output_embeddings
-
     tokenizer = TinyTokenizer()
-    model = TinyModel()
-    slot_id = initialize_action_slot_token(tokenizer, model)
     action_token_ids = select_action_token_ids(tokenizer, num_bins=8)
+    slot_id = select_action_slot_token_id(tokenizer, action_token_ids)
 
-    assert tokenizer.convert_tokens_to_ids(DEFAULT_ACTION_SLOT_TOKEN) == slot_id
     assert slot_id not in action_token_ids
-    assert model.resize_calls == 1
-    print("✓ dedicated action slot token is separate from action bin tokens")
+    assert slot_id not in tokenizer.all_special_ids
+    assert slot_id not in tokenizer.get_added_vocab().values()
+    print("✓ reused action slot token is separate from action bin tokens")
 
 
 if __name__ == "__main__":
     test_select_action_token_ids()
+    test_select_action_token_ids_prefers_low_frequency_scores()
     test_discretize_and_undiscretize()
     test_action_token_roundtrip()
     test_percentile_action_bin_edges_roundtrip()
     test_percentile_token_decode_preserves_action_shape()
     test_config_stores_action_bin_edges()
-    test_dedicated_action_slot_token_is_not_action_bin()
+    test_reused_action_slot_token_is_not_action_bin()
     test_allowed_action_token_logits_processor()
     test_compute_selected_token_logits()
