@@ -34,6 +34,10 @@ class TrainingArguments(transformers.TrainingArguments):
     tune_vision_tower: bool = field(default=False)
     tune_language_model: bool = field(default=False)
     tune_mm_projector: bool = field(default=False)
+    save_only_trainable: bool = field(
+        default=False,
+        metadata={"help": "Save only parameters with requires_grad=True in model checkpoints."},
+    )
     chunk_sampler: bool = field(default=False)
     model_dtype: str = field(default="torch.bfloat16")
     model_max_length: int = field(

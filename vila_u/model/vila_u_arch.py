@@ -140,16 +140,23 @@ class VILAUMetaModel(ABC):
         output_dir,
         state_dict=None,
         safe_serialization: bool = False,
+        save_only_trainable: bool = False,
         **kwargs,
     ):
         if state_dict is None:
             state_dict = self.state_dict()
         os.makedirs(output_dir, exist_ok=True)
+
+        def has_trainable_params(module) -> bool:
+            return any(param.requires_grad for param in module.parameters())
         
         if getattr(self, "tokenizer", None):
             self.tokenizer.save_pretrained(osp.join(output_dir, "llm"))
 
-        if self.get_llm():
+        should_save_llm = self.get_llm() and (
+            not save_only_trainable or has_trainable_params(self.get_llm())
+        )
+        if should_save_llm:
             print(f"saving llm to {osp.join(output_dir, 'llm')}")
             self.llm.config._name_or_path = osp.join(output_dir, "llm")
             llm_state_dict = OrderedDict({k.split("llm.")[-1]: v for k, v in state_dict.items() if "llm" in k})
@@ -159,8 +166,15 @@ class VILAUMetaModel(ABC):
                 safe_serialization=safe_serialization,
             )
             self.config.llm_cfg = self.llm.config
+        elif self.get_llm():
+            self.config.llm_cfg = self.llm.config
 
-        if self.get_vision_tower() and "radio" not in self.get_vision_tower().__class__.__name__.lower():
+        should_save_vision_tower = (
+            self.get_vision_tower()
+            and "radio" not in self.get_vision_tower().__class__.__name__.lower()
+            and (not save_only_trainable or has_trainable_params(self.get_vision_tower()))
+        )
+        if should_save_vision_tower:
             print(f"saving vision_tower to {osp.join(output_dir, 'vision_tower')}")
             self.vision_tower.config._name_or_path = osp.join(output_dir, "vision_tower")
             vision_tower_state_dict = OrderedDict(
@@ -175,8 +189,15 @@ class VILAUMetaModel(ABC):
             self.config.vision_tower_cfg = self.vision_tower.config
             if hasattr(self.config.vision_tower_cfg, 'auto_map'):
                 delattr(self.config.vision_tower_cfg, 'auto_map')
+        elif self.get_vision_tower() and "radio" not in self.get_vision_tower().__class__.__name__.lower():
+            self.config.vision_tower_cfg = self.vision_tower.config
+            if hasattr(self.config.vision_tower_cfg, 'auto_map'):
+                delattr(self.config.vision_tower_cfg, 'auto_map')
 
-        if self.get_mm_projector():
+        should_save_mm_projector = self.get_mm_projector() and (
+            not save_only_trainable or has_trainable_params(self.get_mm_projector())
+        )
+        if should_save_mm_projector:
             print(f"saving mm_projector to {osp.join(output_dir, 'mm_projector')}")
             self.mm_projector.config._name_or_path = osp.join(output_dir, "mm_projector")
             mm_projector_state_dict = OrderedDict(
@@ -187,6 +208,8 @@ class VILAUMetaModel(ABC):
                 state_dict=mm_projector_state_dict,
                 safe_serialization=safe_serialization,
             )
+            self.config.mm_projector_cfg = self.mm_projector.config
+        elif self.get_mm_projector():
             self.config.mm_projector_cfg = self.mm_projector.config
 
         if hasattr(self, "action_head"):

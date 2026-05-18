@@ -359,7 +359,11 @@ class VILAUTrainer(Trainer):
             state_dict = self.model.state_dict()
 
         if self.args.should_save:
-            return self.model.save_pretrained(output_dir, state_dict=state_dict)
+            return self.model.save_pretrained(
+                output_dir,
+                state_dict=state_dict,
+                save_only_trainable=getattr(self.args, "save_only_trainable", False),
+            )
     
     @torch.no_grad()
     def prediction_step(

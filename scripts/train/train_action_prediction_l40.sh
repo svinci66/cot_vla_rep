@@ -41,6 +41,7 @@ USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
 SYNC_TRANSFORMERS_PATCH=${SYNC_TRANSFORMERS_PATCH:-True}
 RESUME_TRAINING=${RESUME_TRAINING:-False}
 AUTO_NEW_OUTPUT_DIR=${AUTO_NEW_OUTPUT_DIR:-True}
+SAVE_ONLY_TRAINABLE=${SAVE_ONLY_TRAINABLE:-True}
 
 if [ "$SUPPRESS_FUTURE_WARNING" = "True" ] || [ "$SUPPRESS_FUTURE_WARNING" = "true" ]; then
     export PYTHONWARNINGS="ignore::FutureWarning${PYTHONWARNINGS:+,$PYTHONWARNINGS}"
@@ -192,6 +193,7 @@ echo "  Use Hybrid Attention: $USE_HYBRID_ATTENTION"
 echo "  Sync Transformers Patch: $SYNC_TRANSFORMERS_PATCH"
 echo "  Resume Training: $RESUME_TRAINING"
 echo "  Auto New Output Dir: $AUTO_NEW_OUTPUT_DIR"
+echo "  Save Only Trainable: $SAVE_ONLY_TRAINABLE"
 echo "=========================================="
 
 train_args=(
@@ -218,6 +220,7 @@ train_args=(
     --save_strategy steps
     --save_steps "$SAVE_STEPS"
     --save_total_limit 3
+    --save_only_trainable "$SAVE_ONLY_TRAINABLE"
     --learning_rate "$LEARNING_RATE"
     --weight_decay 0.
     --warmup_ratio "$WARMUP_RATIO"

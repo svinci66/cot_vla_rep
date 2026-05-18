@@ -456,11 +456,15 @@ def safe_save_model_for_hf_trainer(trainer, output_dir: str):
         trainer.save_model(output_dir, _internal_call=True)
         return
 
-    state_dict = trainer.model.state_dict()
     if trainer.args.should_save:
+        state_dict = trainer.model.state_dict()
         cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
         del state_dict
-        trainer._save(output_dir, state_dict=cpu_state_dict)
+        trainer.model.save_pretrained(
+            output_dir,
+            state_dict=cpu_state_dict,
+            save_only_trainable=getattr(trainer.args, "save_only_trainable", False),
+        )
 
 
 def smart_tokenizer_and_embedding_resize(
