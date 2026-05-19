@@ -92,6 +92,18 @@ class ActionPredictionArguments:
         default=None,
         metadata={"help": "Limit the number of demonstrations per task file for small overfit/debug runs"}
     )
+    task_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "Exact LIBERO HDF5 task filename to load for debug/overfit runs"}
+    )
+    task_file_pattern: Optional[str] = field(
+        default=None,
+        metadata={"help": "Substring or regex used to select LIBERO HDF5 task files"}
+    )
+    gripper_pause_threshold: float = field(
+        default=1e-6,
+        metadata={"help": "Maximum adjacent gripper command/state delta considered unchanged for no-op filtering"}
+    )
     use_discrete_action_prediction: bool = field(
         default=True,
         metadata={"help": "Use autoregressive discrete action tokens instead of regression"}
@@ -741,6 +753,9 @@ def make_action_prediction_data_module(
         subgoal_sampling_strategy=data_args.subgoal_sampling_strategy,
         max_task_files=data_args.max_task_files,
         max_demos_per_task=data_args.max_demos_per_task,
+        task_file=data_args.task_file,
+        task_file_pattern=data_args.task_file_pattern,
+        gripper_pause_threshold=data_args.gripper_pause_threshold,
     )
     training_args.sample_lens = [len(train_dataset)]
 

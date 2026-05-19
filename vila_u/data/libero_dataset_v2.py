@@ -10,6 +10,7 @@ Features:
 
 import os
 import json
+import re
 import torch
 import h5py
 import numpy as np
@@ -43,6 +44,9 @@ class LiberoGoalDataset(Dataset):
         subgoal_sampling_strategy: str = "uniform",
         max_task_files: Optional[int] = None,
         max_demos_per_task: Optional[int] = None,
+        task_file: Optional[str] = None,
+        task_file_pattern: Optional[str] = None,
+        gripper_pause_threshold: float = 1e-6,
     ):
         """
         Args:
@@ -59,6 +63,9 @@ class LiberoGoalDataset(Dataset):
             subgoal_sampling_strategy: "uniform" samples a random offset, "fixed" uses subgoal_max_offset
             max_task_files: Optional limit on the number of HDF5 task files to load
             max_demos_per_task: Optional limit on demonstrations loaded per task file
+            task_file: Optional exact HDF5 task filename to load
+            task_file_pattern: Optional substring/regex used to select task files
+            gripper_pause_threshold: Threshold for gripper action change when detecting pauses
         """
         self.data_root = data_root
         self.image_processor = image_processor
@@ -81,6 +88,9 @@ class LiberoGoalDataset(Dataset):
         self.subgoal_sampling_strategy = subgoal_sampling_strategy
         self.max_task_files = max_task_files
         self.max_demos_per_task = max_demos_per_task
+        self.task_file = task_file
+        self.task_file_pattern = task_file_pattern
+        self.gripper_pause_threshold = gripper_pause_threshold
 
         # Build dataset index
         self.samples = self._build_index()
@@ -98,24 +108,54 @@ class LiberoGoalDataset(Dataset):
             print(f"  - Limited to first {max_task_files} task file(s)")
         if max_demos_per_task is not None:
             print(f"  - Limited to first {max_demos_per_task} demo(s) per task")
+        if task_file is not None:
+            print(f"  - Task file: {task_file}")
+        if task_file_pattern is not None:
+            print(f"  - Task file pattern: {task_file_pattern}")
 
-    def _is_pause(self, action: np.ndarray) -> bool:
+    @staticmethod
+    def _natural_key(value: str):
+        return [
+            int(part) if part.isdigit() else part.lower()
+            for part in re.split(r"(\d+)", value)
+        ]
+
+    def _is_pause(self, action: np.ndarray, previous_action: Optional[np.ndarray] = None) -> bool:
         """
-        Check if an action represents a pause
+        Check whether an action is a no-op.
+
+        A no-op has near-zero translation/rotation and does not change the
+        gripper command/state relative to the previous action.
 
         Args:
             action: [7] action vector
+            previous_action: Previous [7] action vector for gripper-change checks
         Returns:
-            True if action is a pause (low motion)
+            True if action is a no-op action
         """
-        # Calculate L2 norm of position and rotation changes
-        # action[:3] = position delta, action[3:6] = rotation delta
+        # Calculate L2 norm of position and rotation changes.
+        # action[:3] = position delta, action[3:6] = rotation delta,
+        # action[6] = gripper command/state.
         position_norm = np.linalg.norm(action[:3])
         rotation_norm = np.linalg.norm(action[3:6])
+        if action.shape[0] > 6 and previous_action is not None and previous_action.shape[0] > 6:
+            gripper_delta = abs(float(action[6]) - float(previous_action[6]))
+        else:
+            gripper_delta = abs(float(action[6])) if action.shape[0] > 6 else 0.0
 
-        # Consider it a pause if both position and rotation changes are small
+        # Only filter no-ops: low arm motion and unchanged gripper state.
         return (position_norm < self.pause_threshold and
-                rotation_norm < self.pause_threshold)
+                rotation_norm < self.pause_threshold and
+                gripper_delta < self.gripper_pause_threshold)
+
+    def _non_pause_indices(self, actions: np.ndarray) -> list[int]:
+        indices = []
+        previous_action = None
+        for timestep, action in enumerate(actions):
+            if not self._is_pause(action, previous_action):
+                indices.append(timestep)
+            previous_action = action
+        return indices
 
     def _remove_pauses(self, actions: np.ndarray) -> np.ndarray:
         """
@@ -126,15 +166,7 @@ class LiberoGoalDataset(Dataset):
         Returns:
             filtered_actions: [T', 7] action sequence without pauses
         """
-        # Find non-pause indices
-        non_pause_mask = np.array([
-            not self._is_pause(action) for action in actions
-        ])
-
-        # Filter out pauses
-        filtered_actions = actions[non_pause_mask]
-
-        return filtered_actions
+        return actions[self._non_pause_indices(actions)]
 
     def _build_index(self):
         """Build dataset index with pause removal"""
@@ -143,9 +175,28 @@ class LiberoGoalDataset(Dataset):
         # Traverse all .hdf5 files
         filenames = [
             filename
-            for filename in sorted(os.listdir(self.data_root))
+            for filename in sorted(os.listdir(self.data_root), key=self._natural_key)
             if filename.endswith('.hdf5')
         ]
+        if self.task_file is not None:
+            requested = os.path.basename(self.task_file)
+            filenames = [filename for filename in filenames if filename == requested]
+            if not filenames:
+                raise FileNotFoundError(
+                    f"Task file {requested!r} not found under {self.data_root}"
+                )
+        if self.task_file_pattern is not None:
+            pattern = re.compile(self.task_file_pattern)
+            filenames = [
+                filename
+                for filename in filenames
+                if self.task_file_pattern in filename or pattern.search(filename)
+            ]
+            if not filenames:
+                raise FileNotFoundError(
+                    f"No HDF5 task files under {self.data_root} matched "
+                    f"pattern {self.task_file_pattern!r}"
+                )
         if self.max_task_files is not None:
             filenames = filenames[: int(self.max_task_files)]
 
@@ -159,7 +210,7 @@ class LiberoGoalDataset(Dataset):
                 instruction = problem_info['language_instruction']
 
                 # Traverse all demonstrations
-                demo_names = sorted(f['data'].keys())
+                demo_names = sorted(f['data'].keys(), key=self._natural_key)
                 if self.max_demos_per_task is not None:
                     demo_names = demo_names[: int(self.max_demos_per_task)]
                 for demo_name in demo_names:
@@ -175,16 +226,13 @@ class LiberoGoalDataset(Dataset):
                         num_samples = len(filtered_actions)
 
                         # Build mapping from filtered index to original index
-                        non_pause_indices = []
-                        for t in range(len(all_actions)):
-                            if not self._is_pause(all_actions[t]):
-                                non_pause_indices.append(t)
+                        non_pause_indices = self._non_pause_indices(all_actions)
                     else:
                         num_samples = len(all_actions)
                         non_pause_indices = list(range(num_samples))
 
                     # Create samples for valid starting positions
-                    for filtered_t in range(num_samples - self.action_chunk_size):
+                    for filtered_t in range(num_samples - self.action_chunk_size + 1):
                         # Get original timestep indices
                         original_t = non_pause_indices[filtered_t]
 
@@ -297,7 +345,11 @@ def collate_fn(batch):
     return output
 
 
-def compute_dataset_statistics(data_root: str):
+def compute_dataset_statistics(
+    data_root: str,
+    pause_threshold: float = 0.01,
+    gripper_pause_threshold: float = 1e-6,
+):
     """
     Compute statistics about the dataset
 
@@ -310,25 +362,31 @@ def compute_dataset_statistics(data_root: str):
     total_pauses = 0
     action_norms = []
 
-    for filename in sorted(os.listdir(data_root)):
+    for filename in sorted(os.listdir(data_root), key=LiberoGoalDataset._natural_key):
         if not filename.endswith('.hdf5'):
             continue
 
         filepath = os.path.join(data_root, filename)
 
         with h5py.File(filepath, 'r') as f:
-            for demo_name in f['data'].keys():
+            for demo_name in sorted(f['data'].keys(), key=LiberoGoalDataset._natural_key):
                 demo = f['data'][demo_name]
                 actions = demo['actions'][:]  # [T, 7]
 
                 total_samples += len(actions)
 
                 # Count pauses
+                previous_action = None
                 for action in actions:
                     norm = np.linalg.norm(action[:6])  # position + rotation
                     action_norms.append(norm)
-                    if norm < 0.01:
+                    if action.shape[0] > 6 and previous_action is not None and previous_action.shape[0] > 6:
+                        gripper_delta = abs(float(action[6]) - float(previous_action[6]))
+                    else:
+                        gripper_delta = abs(float(action[6])) if action.shape[0] > 6 else 0.0
+                    if norm < pause_threshold and gripper_delta < gripper_pause_threshold:
                         total_pauses += 1
+                    previous_action = action
 
     stats = {
         'total_samples': total_samples,

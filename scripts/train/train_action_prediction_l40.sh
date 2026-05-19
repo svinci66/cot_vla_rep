@@ -32,6 +32,11 @@ ACTION_CHUNK_SIZE=${ACTION_CHUNK_SIZE:-10}
 ACTION_DIM=${ACTION_DIM:-7}
 REMOVE_PAUSE_INTERVALS=${REMOVE_PAUSE_INTERVALS:-True}
 PAUSE_THRESHOLD=${PAUSE_THRESHOLD:-0.01}
+GRIPPER_PAUSE_THRESHOLD=${GRIPPER_PAUSE_THRESHOLD:-1e-6}
+MAX_TASK_FILES=${MAX_TASK_FILES:-}
+MAX_DEMOS_PER_TASK=${MAX_DEMOS_PER_TASK:-}
+TASK_FILE=${TASK_FILE:-}
+TASK_FILE_PATTERN=${TASK_FILE_PATTERN:-}
 REPORT_TO=${REPORT_TO:-wandb}
 SUPPRESS_FUTURE_WARNING=${SUPPRESS_FUTURE_WARNING:-True}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
@@ -190,6 +195,11 @@ echo "  Attention Backend: $ATTN_IMPLEMENTATION"
 echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
 echo "  Use DeepSpeed: $USE_DEEPSPEED"
 echo "  Use Hybrid Attention: $USE_HYBRID_ATTENTION"
+echo "  Task File: ${TASK_FILE:-auto}"
+echo "  Task File Pattern: ${TASK_FILE_PATTERN:-none}"
+echo "  Max Task Files: ${MAX_TASK_FILES:-all}"
+echo "  Max Demos Per Task: ${MAX_DEMOS_PER_TASK:-all}"
+echo "  Gripper Pause Threshold: $GRIPPER_PAUSE_THRESHOLD"
 echo "  Sync Transformers Patch: $SYNC_TRANSFORMERS_PATCH"
 echo "  Resume Training: $RESUME_TRAINING"
 echo "  Auto New Output Dir: $AUTO_NEW_OUTPUT_DIR"
@@ -237,7 +247,24 @@ train_args=(
     --action_dim "$ACTION_DIM"
     --remove_pause_intervals "$REMOVE_PAUSE_INTERVALS"
     --pause_threshold "$PAUSE_THRESHOLD"
+    --gripper_pause_threshold "$GRIPPER_PAUSE_THRESHOLD"
 )
+
+if [ -n "$TASK_FILE" ]; then
+    train_args+=(--task_file "$TASK_FILE")
+fi
+
+if [ -n "$TASK_FILE_PATTERN" ]; then
+    train_args+=(--task_file_pattern "$TASK_FILE_PATTERN")
+fi
+
+if [ -n "$MAX_TASK_FILES" ]; then
+    train_args+=(--max_task_files "$MAX_TASK_FILES")
+fi
+
+if [ -n "$MAX_DEMOS_PER_TASK" ]; then
+    train_args+=(--max_demos_per_task "$MAX_DEMOS_PER_TASK")
+fi
 
 if [ "$USE_DEEPSPEED" = "True" ] || [ "$USE_DEEPSPEED" = "true" ]; then
     train_args+=(--deepspeed ./scripts/zero2.json)

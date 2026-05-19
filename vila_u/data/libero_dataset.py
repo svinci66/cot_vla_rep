@@ -5,6 +5,7 @@ LIBERO Goal 数据集加载器
 import os
 import json
 import random
+import re
 import torch
 import h5py
 import numpy as np
@@ -59,12 +60,19 @@ class LiberoGoalDataset(Dataset):
 
         print(f"[LiberoGoalDataset] Loaded {len(self.samples)} samples from {data_root}")
 
+    @staticmethod
+    def _natural_key(value: str):
+        return [
+            int(part) if part.isdigit() else part.lower()
+            for part in re.split(r"(\d+)", value)
+        ]
+
     def _build_index(self):
         """构建数据集索引"""
         samples = []
 
         # 遍历所有 .hdf5 文件
-        for filename in os.listdir(self.data_root):
+        for filename in sorted(os.listdir(self.data_root), key=self._natural_key):
             if not filename.endswith('.hdf5'):
                 continue
 
@@ -76,12 +84,12 @@ class LiberoGoalDataset(Dataset):
                 instruction = problem_info['language_instruction']
 
                 # 遍历所有演示
-                for demo_name in f['data'].keys():
+                for demo_name in sorted(f['data'].keys(), key=self._natural_key):
                     demo = f['data'][demo_name]
                     num_samples = demo.attrs['num_samples']
 
                     # 为每个有效的起始位置创建一个样本
-                    for t in range(num_samples - self.action_chunk_size):
+                    for t in range(num_samples - self.action_chunk_size + 1):
                         samples.append({
                             'file': filepath,
                             'demo': demo_name,
