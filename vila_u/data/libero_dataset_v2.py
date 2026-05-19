@@ -41,6 +41,8 @@ class LiberoGoalDataset(Dataset):
         subgoal_min_offset: int = 1,
         subgoal_max_offset: Optional[int] = None,
         subgoal_sampling_strategy: str = "uniform",
+        max_task_files: Optional[int] = None,
+        max_demos_per_task: Optional[int] = None,
     ):
         """
         Args:
@@ -55,6 +57,8 @@ class LiberoGoalDataset(Dataset):
             subgoal_min_offset: Minimum future-frame offset for subgoal sampling
             subgoal_max_offset: Maximum future-frame offset for subgoal sampling. Defaults to action_chunk_size
             subgoal_sampling_strategy: "uniform" samples a random offset, "fixed" uses subgoal_max_offset
+            max_task_files: Optional limit on the number of HDF5 task files to load
+            max_demos_per_task: Optional limit on demonstrations loaded per task file
         """
         self.data_root = data_root
         self.image_processor = image_processor
@@ -75,6 +79,8 @@ class LiberoGoalDataset(Dataset):
                 "subgoal_sampling_strategy must be either 'uniform' or 'fixed'"
             )
         self.subgoal_sampling_strategy = subgoal_sampling_strategy
+        self.max_task_files = max_task_files
+        self.max_demos_per_task = max_demos_per_task
 
         # Build dataset index
         self.samples = self._build_index()
@@ -88,6 +94,10 @@ class LiberoGoalDataset(Dataset):
                 f"(offset={self.subgoal_min_offset}-{self.subgoal_max_offset}, "
                 f"strategy={self.subgoal_sampling_strategy})"
             )
+        if max_task_files is not None:
+            print(f"  - Limited to first {max_task_files} task file(s)")
+        if max_demos_per_task is not None:
+            print(f"  - Limited to first {max_demos_per_task} demo(s) per task")
 
     def _is_pause(self, action: np.ndarray) -> bool:
         """
@@ -131,9 +141,15 @@ class LiberoGoalDataset(Dataset):
         samples = []
 
         # Traverse all .hdf5 files
-        for filename in sorted(os.listdir(self.data_root)):
-            if not filename.endswith('.hdf5'):
-                continue
+        filenames = [
+            filename
+            for filename in sorted(os.listdir(self.data_root))
+            if filename.endswith('.hdf5')
+        ]
+        if self.max_task_files is not None:
+            filenames = filenames[: int(self.max_task_files)]
+
+        for filename in filenames:
 
             filepath = os.path.join(self.data_root, filename)
 
@@ -143,7 +159,10 @@ class LiberoGoalDataset(Dataset):
                 instruction = problem_info['language_instruction']
 
                 # Traverse all demonstrations
-                for demo_name in f['data'].keys():
+                demo_names = sorted(f['data'].keys())
+                if self.max_demos_per_task is not None:
+                    demo_names = demo_names[: int(self.max_demos_per_task)]
+                for demo_name in demo_names:
                     demo = f['data'][demo_name]
 
                     # Load all actions for this demo

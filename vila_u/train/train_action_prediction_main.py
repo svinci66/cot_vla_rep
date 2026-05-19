@@ -84,6 +84,14 @@ class ActionPredictionArguments:
         default=0.01,
         metadata={"help": "Threshold for detecting pause (L2 norm of action)"}
     )
+    max_task_files: Optional[int] = field(
+        default=None,
+        metadata={"help": "Limit the number of LIBERO HDF5 task files for small overfit/debug runs"}
+    )
+    max_demos_per_task: Optional[int] = field(
+        default=None,
+        metadata={"help": "Limit the number of demonstrations per task file for small overfit/debug runs"}
+    )
     use_discrete_action_prediction: bool = field(
         default=True,
         metadata={"help": "Use autoregressive discrete action tokens instead of regression"}
@@ -731,6 +739,8 @@ def make_action_prediction_data_module(
         subgoal_min_offset=data_args.subgoal_min_offset,
         subgoal_max_offset=data_args.subgoal_max_offset,
         subgoal_sampling_strategy=data_args.subgoal_sampling_strategy,
+        max_task_files=data_args.max_task_files,
+        max_demos_per_task=data_args.max_demos_per_task,
     )
     training_args.sample_lens = [len(train_dataset)]
 

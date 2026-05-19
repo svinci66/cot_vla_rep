@@ -33,6 +33,8 @@ ACTION_BIN_LOW_PERCENTILE=${ACTION_BIN_LOW_PERCENTILE:-1.0}
 ACTION_BIN_HIGH_PERCENTILE=${ACTION_BIN_HIGH_PERCENTILE:-99.0}
 REMOVE_PAUSE_INTERVALS=${REMOVE_PAUSE_INTERVALS:-True}
 PAUSE_THRESHOLD=${PAUSE_THRESHOLD:-0.01}
+MAX_TASK_FILES=${MAX_TASK_FILES:-}
+MAX_DEMOS_PER_TASK=${MAX_DEMOS_PER_TASK:-}
 REPORT_TO=${REPORT_TO:-wandb}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-4}
 GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
@@ -212,6 +214,8 @@ echo "  Effective Batch Size: $effective_bs"
 echo "  Image Size: $IMAGE_SIZE"
 echo "  Action Chunk Size: $ACTION_CHUNK_SIZE"
 echo "  Action Percentile Bins: $USE_ACTION_PERCENTILE_BINS ($ACTION_BIN_LOW_PERCENTILE-$ACTION_BIN_HIGH_PERCENTILE)"
+echo "  Max Task Files: ${MAX_TASK_FILES:-all}"
+echo "  Max Demos Per Task: ${MAX_DEMOS_PER_TASK:-all}"
 echo "  Suppress FutureWarning: $SUPPRESS_FUTURE_WARNING"
 echo "  Attention Backend: $ATTN_IMPLEMENTATION"
 echo "  Low CPU Mem Usage: $LOW_CPU_MEM_USAGE"
@@ -287,6 +291,14 @@ train_args=(
     --remove_pause_intervals "$REMOVE_PAUSE_INTERVALS"
     --pause_threshold "$PAUSE_THRESHOLD"
 )
+
+if [ -n "$MAX_TASK_FILES" ]; then
+    train_args+=(--max_task_files "$MAX_TASK_FILES")
+fi
+
+if [ -n "$MAX_DEMOS_PER_TASK" ]; then
+    train_args+=(--max_demos_per_task "$MAX_DEMOS_PER_TASK")
+fi
 
 if [ "$USE_DEEPSPEED" = "True" ] || [ "$USE_DEEPSPEED" = "true" ]; then
     train_args+=(--deepspeed ./scripts/zero2.json)
