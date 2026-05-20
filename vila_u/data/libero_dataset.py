@@ -12,6 +12,7 @@ import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms as transforms
+from vila_u.utils.libero_image import rotate_libero_image_180
 
 
 class LiberoGoalDataset(Dataset):
@@ -111,6 +112,7 @@ class LiberoGoalDataset(Dataset):
 
             # 加载观察图像
             obs_rgb = demo['obs/agentview_rgb'][t]  # [H, W, 3]
+            obs_rgb = rotate_libero_image_180(obs_rgb)
             obs_image = Image.fromarray(obs_rgb)
             obs_tensor = self.transform(obs_image)  # [3, H, W]
 

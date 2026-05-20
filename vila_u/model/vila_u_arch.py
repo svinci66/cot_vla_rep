@@ -36,10 +36,12 @@ from vila_u.utils.tokenizer import infer_stop_tokens, tokenize_conversation
 from vila_u.utils.action_tokenizer import (
     AllowedActionTokensLogitsProcessor,
     bins_to_token_ids,
+    build_typed_action_slot_token_ids,
     compute_selected_token_logits,
     token_ids_to_bins,
     token_ids_to_actions,
 )
+from vila_u.utils.libero_image import rotate_libero_image_180
 
 
 class VILAUMetaModel(ABC):
@@ -869,6 +871,7 @@ class VILAUMetaForCausalLM(ABC):
         from PIL import Image
         import numpy as np
 
+        image = rotate_libero_image_180(image)
         if isinstance(image, np.ndarray):
             # numpy array [H, W, 3] -> PIL Image
             image = Image.fromarray(image.astype(np.uint8))
@@ -898,6 +901,7 @@ class VILAUMetaForCausalLM(ABC):
 
         subgoal_image_tensor = None
         if subgoal_image is not None:
+            subgoal_image = rotate_libero_image_180(subgoal_image)
             if isinstance(subgoal_image, np.ndarray):
                 subgoal_image = Image.fromarray(subgoal_image.astype(np.uint8))
             elif isinstance(subgoal_image, torch.Tensor):
@@ -941,16 +945,24 @@ class VILAUMetaForCausalLM(ABC):
 
             num_action_tokens = self.config.action_chunk_size * self.config.action_dim
             if getattr(self.config, "use_hybrid_attention", False):
-                action_slot_token_id = getattr(self.config, "action_slot_token_id", None)
-                if action_slot_token_id is None:
-                    raise RuntimeError("Hybrid attention requires config.action_slot_token_id")
+                action_slot_token_ids = getattr(self.config, "action_slot_token_ids", None)
+                if action_slot_token_ids is None:
+                    action_slot_token_id = getattr(self.config, "action_slot_token_id", None)
+                    if action_slot_token_id is None:
+                        raise RuntimeError("Hybrid attention requires config.action_slot_token_ids")
+                    action_slot_token_ids = {
+                        "x": action_slot_token_id,
+                        "theta": action_slot_token_id,
+                        "gripper": action_slot_token_id,
+                    }
 
-                action_slots = torch.full(
-                    (1, num_action_tokens),
-                    fill_value=action_slot_token_id,
-                    dtype=input_ids.dtype,
+                action_slots = build_typed_action_slot_token_ids(
+                    action_slot_token_ids,
+                    action_chunk_size=self.config.action_chunk_size,
+                    action_dim=self.config.action_dim,
                     device=input_ids.device,
-                )
+                    dtype=input_ids.dtype,
+                ).unsqueeze(0)
                 full_input_ids = torch.cat([input_ids, action_slots], dim=1)
                 full_attention_mask = full_input_ids.ne(self.tokenizer.pad_token_id)
                 (
@@ -1095,6 +1107,7 @@ class VILAUMetaForCausalLM(ABC):
         import numpy as np
         from vila_u.constants import DEFAULT_IMAGE_TOKEN
 
+        image = rotate_libero_image_180(image)
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image.astype(np.uint8))
         elif isinstance(image, torch.Tensor) and image.dim() == 3:

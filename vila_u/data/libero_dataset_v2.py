@@ -17,6 +17,7 @@ import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image
 from typing import Optional
+from vila_u.utils.libero_image import rotate_libero_image_180
 
 
 class LiberoGoalDataset(Dataset):
@@ -252,6 +253,7 @@ class LiberoGoalDataset(Dataset):
         return len(self.samples)
 
     def _preprocess_rgb(self, rgb: np.ndarray) -> torch.Tensor:
+        rgb = rotate_libero_image_180(rgb)
         image = Image.fromarray(rgb.astype(np.uint8))
         return self.image_processor.preprocess(
             image,

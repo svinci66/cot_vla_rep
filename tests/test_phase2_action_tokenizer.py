@@ -14,6 +14,7 @@ import torch
 class DummyTokenizer:
     def __init__(self):
         self._vocab = {f"tok_{i}": i for i in range(1000)}
+        self.vocab_size = 900
         self.all_special_ids = [0, 1, 2]
         self._added_vocab = {"<image>": 998, "<im_start>": 999}
 
@@ -30,14 +31,15 @@ def test_select_action_token_ids():
     tokenizer = DummyTokenizer()
     action_token_ids = select_action_token_ids(tokenizer, num_bins=8)
 
-    assert action_token_ids == [990, 991, 992, 993, 994, 995, 996, 997]
-    print("✓ action token IDs selected from tokenizer tail")
+    assert action_token_ids == [892, 893, 894, 895, 896, 897, 898, 899]
+    print("✓ action token IDs selected from base tokenizer tail")
 
 
-def test_select_action_token_ids_prefers_low_frequency_scores():
+def test_select_action_token_ids_uses_frequency_without_base_vocab_size():
     from vila_u.utils.action_tokenizer import select_action_token_ids
 
     tokenizer = DummyTokenizer()
+    del tokenizer.vocab_size
     tokenizer.token_frequency = {
         token_id: 1000.0 - token_id
         for token_id in tokenizer.get_vocab().values()
@@ -45,7 +47,7 @@ def test_select_action_token_ids_prefers_low_frequency_scores():
     action_token_ids = select_action_token_ids(tokenizer, num_bins=8)
 
     assert action_token_ids == [3, 4, 5, 6, 7, 8, 9, 10]
-    print("✓ action token IDs selected from lowest exposed frequencies")
+    print("✓ action token IDs can use exposed frequencies when base vocab size is absent")
 
 
 def test_discretize_and_undiscretize():
@@ -200,8 +202,8 @@ def test_config_stores_action_bin_edges():
     print("✓ action bin edges stored in config")
 
 
-def test_reused_action_slot_token_is_not_action_bin():
-    from vila_u.train.train_action_prediction_main import select_action_slot_token_id
+def test_typed_action_slot_tokens_are_not_action_bins():
+    from vila_u.train.train_action_prediction_main import select_action_slot_token_ids
     from vila_u.utils.action_tokenizer import select_action_token_ids
 
     class TinyTokenizer(DummyTokenizer):
@@ -214,6 +216,8 @@ def test_reused_action_slot_token_is_not_action_bin():
 
         def add_tokens(self, tokens, special_tokens=False):
             num_added = 0
+            if isinstance(tokens, str):
+                tokens = [tokens]
             for token in tokens:
                 if token not in self._vocab:
                     self._vocab[token] = max(self._vocab.values()) + 1
@@ -224,22 +228,25 @@ def test_reused_action_slot_token_is_not_action_bin():
 
     tokenizer = TinyTokenizer()
     action_token_ids = select_action_token_ids(tokenizer, num_bins=8)
-    slot_id = select_action_slot_token_id(tokenizer, action_token_ids)
+    slot_ids = select_action_slot_token_ids(tokenizer, action_token_ids)
 
-    assert slot_id not in action_token_ids
-    assert slot_id not in tokenizer.all_special_ids
-    assert slot_id not in tokenizer.get_added_vocab().values()
-    print("✓ reused action slot token is separate from action bin tokens")
+    assert sorted(slot_ids) == ["gripper", "theta", "x"]
+    assert len(set(slot_ids.values())) == 3
+    assert slot_ids == {"x": 889, "theta": 890, "gripper": 891}
+    for slot_id in slot_ids.values():
+        assert slot_id not in action_token_ids
+        assert slot_id not in tokenizer.all_special_ids
+    print("✓ typed action slot tokens are separate from action bin tokens")
 
 
 if __name__ == "__main__":
     test_select_action_token_ids()
-    test_select_action_token_ids_prefers_low_frequency_scores()
+    test_select_action_token_ids_uses_frequency_without_base_vocab_size()
     test_discretize_and_undiscretize()
     test_action_token_roundtrip()
     test_percentile_action_bin_edges_roundtrip()
     test_percentile_token_decode_preserves_action_shape()
     test_config_stores_action_bin_edges()
-    test_reused_action_slot_token_is_not_action_bin()
+    test_typed_action_slot_tokens_are_not_action_bins()
     test_allowed_action_token_logits_processor()
     test_compute_selected_token_logits()

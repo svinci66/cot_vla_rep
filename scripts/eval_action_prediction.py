@@ -18,12 +18,12 @@ from vila_u.constants import (
     DEFAULT_IMAGE_TOKEN,
     DEFAULT_IM_START_TOKEN,
     DEFAULT_IM_END_TOKEN,
-    DEFAULT_ACTION_SLOT_TOKEN,
     ACTION_NUM_BINS,
 )
 from vila_u.utils.tokenizer import tokenize_conversation
 from vila_u.utils.action_tokenizer import (
     actions_to_token_ids,
+    build_typed_action_slot_token_ids,
     token_ids_to_bins,
     undiscretize_action_bins,
     compute_selected_token_logits,
@@ -32,7 +32,7 @@ from vila_u.utils.action_tokenizer import (
 from vila_u.utils.hybrid_attention import build_hybrid_attention_mask
 
 
-def collate_fn_discrete(batch, tokenizer, mm_use_im_start_end, action_token_ids, action_slot_token_id, num_action_tokens, action_bin_edges=None):
+def collate_fn_discrete(batch, tokenizer, mm_use_im_start_end, action_token_ids, action_slot_token_ids, action_chunk_size, action_dim, action_bin_edges=None):
     """离散动作预测的collate函数"""
     images = torch.stack([item["observation"] for item in batch])
     actions = torch.stack([item["action_labels"] for item in batch])
@@ -61,7 +61,13 @@ def collate_fn_discrete(batch, tokenizer, mm_use_im_start_end, action_token_ids,
         ).view(-1)
 
         # 构建输入：prompt + action slots
-        action_input_ids = torch.full_like(action_token_ids_flat, action_slot_token_id)
+        action_input_ids = build_typed_action_slot_token_ids(
+            action_slot_token_ids,
+            action_chunk_size=action_chunk_size,
+            action_dim=action_dim,
+            device=action_token_ids_flat.device,
+            dtype=action_token_ids_flat.dtype,
+        )
         full_input_ids = torch.cat([prompt_ids, action_input_ids])
 
         # 构建标签：忽略prompt部分，只计算action部分的loss
@@ -111,12 +117,16 @@ def evaluate(args):
 
     # 获取action token IDs
     action_token_ids = select_action_token_ids(tokenizer, ACTION_NUM_BINS)
-    action_slot_token_id = getattr(model.config, "action_slot_token_id", None)
-    if action_slot_token_id is None:
-        action_slot_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_ACTION_SLOT_TOKEN)
-    if action_slot_token_id is None or action_slot_token_id < 0:
-        raise ValueError("Checkpoint does not define a valid action slot token")
-    num_action_tokens = args.action_chunk_size * args.action_dim
+    action_slot_token_ids = getattr(model.config, "action_slot_token_ids", None)
+    if action_slot_token_ids is None:
+        action_slot_token_id = getattr(model.config, "action_slot_token_id", None)
+        if action_slot_token_id is None or action_slot_token_id < 0:
+            raise ValueError("Checkpoint does not define valid action slot tokens")
+        action_slot_token_ids = {
+            "x": action_slot_token_id,
+            "theta": action_slot_token_id,
+            "gripper": action_slot_token_id,
+        }
 
     # 2. 加载数据集
     print("\n[2/3] Loading dataset...")
@@ -137,7 +147,14 @@ def evaluate(args):
         shuffle=False,
         num_workers=0,
         collate_fn=lambda batch: collate_fn_discrete(
-            batch, tokenizer, True, action_token_ids, action_slot_token_id, num_action_tokens, getattr(model.config, "action_bin_edges", None)
+            batch,
+            tokenizer,
+            True,
+            action_token_ids,
+            action_slot_token_ids,
+            args.action_chunk_size,
+            args.action_dim,
+            getattr(model.config, "action_bin_edges", None),
         ),
     )
 

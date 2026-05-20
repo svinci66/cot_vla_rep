@@ -29,9 +29,11 @@ from vila_u.train.utils import get_checkpoint_path
 from vila_u.utils.action_tokenizer import (
     actions_to_token_ids,
     bins_to_token_ids,
+    build_typed_action_slot_token_ids,
     compute_selected_token_logits,
 )
 from vila_u.utils.hybrid_attention import build_hybrid_attention_mask
+from vila_u.utils.libero_image import rotate_libero_image_180
 from vila_u.utils.tokenizer import tokenize_conversation
 
 
@@ -137,18 +139,28 @@ def main():
         add_generation_prompt=True,
     ).unsqueeze(0).to(args.device)
     attention_mask = input_ids.ne(tokenizer.pad_token_id)
-    image_tensor = image_processor.preprocess(sample["image"], return_tensors="pt")["pixel_values"]
+    image_tensor = image_processor.preprocess(
+        rotate_libero_image_180(sample["image"]),
+        return_tensors="pt",
+    )["pixel_values"]
     image_tensor = image_tensor.to(next(model.parameters()).device)
 
     num_action_tokens = model.config.action_chunk_size * model.config.action_dim
     if getattr(model.config, "use_hybrid_attention", False):
-        action_slot_token_id = model.config.action_slot_token_id
-        action_slots = torch.full(
-            (1, num_action_tokens),
-            fill_value=action_slot_token_id,
-            dtype=input_ids.dtype,
+        action_slot_token_ids = getattr(model.config, "action_slot_token_ids", None)
+        if action_slot_token_ids is None:
+            action_slot_token_ids = {
+                "x": model.config.action_slot_token_id,
+                "theta": model.config.action_slot_token_id,
+                "gripper": model.config.action_slot_token_id,
+            }
+        action_slots = build_typed_action_slot_token_ids(
+            action_slot_token_ids,
+            action_chunk_size=model.config.action_chunk_size,
+            action_dim=model.config.action_dim,
             device=input_ids.device,
-        )
+            dtype=input_ids.dtype,
+        ).unsqueeze(0)
         full_input_ids = torch.cat([input_ids, action_slots], dim=1)
         full_attention_mask = full_input_ids.ne(tokenizer.pad_token_id)
         (

@@ -94,10 +94,12 @@ def select_action_token_ids(tokenizer, num_bins: int = ACTION_NUM_BINS) -> list[
     """Select existing tokenizer tokens to repurpose as action bins.
 
     CoT-VLA repurposes the 256 least frequently used text-tokenizer tokens as
-    action bin tokens. Some Hugging Face tokenizers do not expose corpus usage
-    frequencies, so the implementation first consumes explicit frequency/rank
-    metadata when available and otherwise falls back to the deterministic
-    tail-of-vocabulary heuristic used by many tokenizer training pipelines.
+    action bin tokens. Public VILA-U checkpoints expose a LLaMA/SentencePiece
+    base vocabulary plus added visual special tokens, but do not expose the
+    original token-frequency table. Following the OpenVLA-compatible mapping,
+    the fallback uses the tail of ``tokenizer.vocab_size`` rather than
+    ``len(tokenizer)``/model vocab size, so added visual tokens are never
+    repurposed as action bins.
     """
 
     special_ids = set(getattr(tokenizer, "all_special_ids", []))
@@ -116,6 +118,22 @@ def select_action_token_ids(tokenizer, num_bins: int = ACTION_NUM_BINS) -> list[
             f"Tokenizer only has {len(candidate_ids)} eligible tokens, need {num_bins}"
         )
 
+    base_vocab_size = getattr(tokenizer, "vocab_size", None)
+    if base_vocab_size is not None:
+        base_start = int(base_vocab_size) - num_bins
+        if base_start < 0:
+            raise ValueError(
+                f"Tokenizer base vocab has {base_vocab_size} tokens, need {num_bins}"
+            )
+        base_tail = list(range(base_start, int(base_vocab_size)))
+        unavailable = [token_id for token_id in base_tail if token_id not in candidate_ids]
+        if unavailable:
+            raise ValueError(
+                "OpenVLA-style action token selection found unavailable/special "
+                f"base-vocab ids: {unavailable[:8]}"
+            )
+        return base_tail
+
     vocab_scores = _get_tokenizer_vocab_scores(tokenizer)
     if vocab_scores:
         scored_candidate_ids = [
@@ -129,6 +147,41 @@ def select_action_token_ids(tokenizer, num_bins: int = ACTION_NUM_BINS) -> list[
             return sorted(selected)
 
     return candidate_ids[-num_bins:]
+
+
+def build_typed_action_slot_token_ids(
+    action_slot_token_ids: Mapping[str, int] | Sequence[int],
+    action_chunk_size: int,
+    action_dim: int,
+    device=None,
+    dtype: torch.dtype = torch.long,
+) -> torch.LongTensor:
+    """Build typed parallel-decoding slots: x, theta, gripper per action step."""
+
+    if isinstance(action_slot_token_ids, Mapping):
+        required = ("x", "theta", "gripper")
+        missing = [key for key in required if key not in action_slot_token_ids]
+        if missing:
+            raise ValueError(f"Missing action slot token ids for: {missing}")
+        x_token_id = int(action_slot_token_ids["x"])
+        theta_token_id = int(action_slot_token_ids["theta"])
+        gripper_token_id = int(action_slot_token_ids["gripper"])
+    else:
+        values = list(action_slot_token_ids)
+        if len(values) != 3:
+            raise ValueError(
+                f"Expected 3 action slot token ids (x, theta, gripper), got {len(values)}"
+            )
+        x_token_id, theta_token_id, gripper_token_id = map(int, values)
+
+    per_step = [x_token_id] * min(3, action_dim)
+    if action_dim > 3:
+        per_step.extend([theta_token_id] * min(3, action_dim - 3))
+    if action_dim > 6:
+        per_step.extend([gripper_token_id] * (action_dim - 6))
+    if len(per_step) != action_dim:
+        raise ValueError(f"Failed to build {action_dim} typed action slots")
+    return torch.tensor(per_step * action_chunk_size, device=device, dtype=dtype)
 
 
 def normalize_action_bin_edges(

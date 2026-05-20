@@ -45,6 +45,7 @@ class VILAUConfig(PretrainedConfig):
         )
         self.action_token_ids = kwargs.pop("action_token_ids", None)
         self.action_slot_token_id = kwargs.pop("action_slot_token_id", None)
+        self.action_slot_token_ids = kwargs.pop("action_slot_token_ids", None)
         self.action_bin_edges = kwargs.pop("action_bin_edges", None)
         self.use_action_percentile_bins = kwargs.pop("use_action_percentile_bins", True)
         self.action_bin_low_percentile = kwargs.pop("action_bin_low_percentile", 1.0)

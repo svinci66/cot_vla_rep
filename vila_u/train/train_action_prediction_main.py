@@ -34,6 +34,7 @@ from vila_u.constants import (
 )
 from vila_u.utils.action_tokenizer import (
     actions_to_token_ids,
+    build_typed_action_slot_token_ids,
     compute_percentile_action_bin_edges,
     compute_selected_token_logits,
     select_action_token_ids,
@@ -210,7 +211,7 @@ class DiscreteActionPredictionDataCollator:
         model_max_length: int,
         mm_use_im_start_end: bool,
         action_token_ids,
-        action_slot_token_id: int,
+        action_slot_token_ids,
         action_chunk_size: int,
         action_dim: int,
         use_hybrid_attention: bool,
@@ -220,7 +221,9 @@ class DiscreteActionPredictionDataCollator:
         self.model_max_length = model_max_length
         self.mm_use_im_start_end = mm_use_im_start_end
         self.action_token_ids = action_token_ids
-        self.action_slot_token_id = action_slot_token_id
+        self.action_slot_token_ids = action_slot_token_ids
+        self.action_chunk_size = action_chunk_size
+        self.action_dim = action_dim
         self.num_action_tokens = action_chunk_size * action_dim
         self.use_hybrid_attention = use_hybrid_attention
         self.action_bin_edges = action_bin_edges
@@ -248,9 +251,12 @@ class DiscreteActionPredictionDataCollator:
                 bin_edges=self.action_bin_edges,
             ).view(-1)
             if self.use_hybrid_attention:
-                action_input_ids = torch.full_like(
-                    action_token_ids,
-                    fill_value=self.action_slot_token_id,
+                action_input_ids = build_typed_action_slot_token_ids(
+                    self.action_slot_token_ids,
+                    action_chunk_size=self.action_chunk_size,
+                    action_dim=self.action_dim,
+                    device=action_token_ids.device,
+                    dtype=action_token_ids.dtype,
                 )
             else:
                 action_input_ids = action_token_ids
@@ -511,20 +517,56 @@ def smart_tokenizer_and_embedding_resize(
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
 
-def select_action_slot_token_id(tokenizer, action_token_ids) -> int:
-    """Reuse an existing non-action tokenizer token as the parallel action slot."""
-    action_token_set = set(action_token_ids)
+def _select_reusable_non_action_token_id(tokenizer, excluded_token_ids) -> int:
+    """Reuse an existing non-action tokenizer token as a fallback action slot."""
+    excluded_token_ids = set(excluded_token_ids)
     special_ids = set(getattr(tokenizer, "all_special_ids", []))
     added_vocab = getattr(tokenizer, "get_added_vocab", lambda: {})()
     added_token_ids = set(added_vocab.values())
     candidate_ids = sorted(set(tokenizer.get_vocab().values()), reverse=True)
     for token_id in candidate_ids:
-        if token_id in action_token_set:
+        if token_id in excluded_token_ids:
             continue
         if token_id in special_ids or token_id in added_token_ids:
             continue
         return int(token_id)
     raise ValueError("Failed to select a reusable tokenizer token for action slots")
+
+
+def select_action_slot_token_ids(tokenizer, action_token_ids, model=None) -> dict[str, int]:
+    """Create typed [x], [theta], and [gripper] slots for parallel action decoding."""
+
+    base_vocab_size = getattr(tokenizer, "vocab_size", None)
+    action_token_set = set(action_token_ids)
+    if base_vocab_size is not None:
+        base_vocab_size = int(base_vocab_size)
+        if min(action_token_set) < 3:
+            raise ValueError("Need at least three reusable base-vocab tokens before action bins")
+        slot_token_ids = {
+            "x": min(action_token_set) - 3,
+            "theta": min(action_token_set) - 2,
+            "gripper": min(action_token_set) - 1,
+        }
+        unavailable = [
+            token_id
+            for token_id in slot_token_ids.values()
+            if token_id < 0 or token_id >= base_vocab_size or token_id in action_token_set
+        ]
+        if unavailable:
+            raise ValueError(f"Invalid typed action slot token ids: {unavailable}")
+        return slot_token_ids
+
+    excluded = set(action_token_ids)
+    slot_token_ids = {}
+    for key in ("x", "theta", "gripper"):
+        token_id = _select_reusable_non_action_token_id(tokenizer, excluded)
+        slot_token_ids[key] = token_id
+        excluded.add(token_id)
+    return slot_token_ids
+
+
+def select_action_slot_token_id(tokenizer, action_token_ids) -> int:
+    return _select_reusable_non_action_token_id(tokenizer, action_token_ids)
 
 
 def insert_subgoal_embeds_before_action_block(
@@ -733,7 +775,7 @@ def make_action_prediction_data_module(
     training_args: TrainingArguments,
     mm_use_im_start_end: bool,
     action_token_ids,
-    action_slot_token_id: int | None,
+    action_slot_token_ids,
     action_bin_edges=None,
 ) -> Dict:
     """Create data module for action prediction training"""
@@ -772,7 +814,7 @@ def make_action_prediction_data_module(
                 model_max_length=training_args.model_max_length,
                 mm_use_im_start_end=mm_use_im_start_end,
                 action_token_ids=action_token_ids,
-                action_slot_token_id=action_slot_token_id,
+                action_slot_token_ids=action_slot_token_ids,
                 action_chunk_size=data_args.action_chunk_size,
                 action_dim=data_args.action_dim,
                 use_hybrid_attention=data_args.use_hybrid_attention,
@@ -989,13 +1031,14 @@ def train():
     model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
     model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
     action_token_ids = None
-    action_slot_token_id = None
+    action_slot_token_ids = None
     if action_args.use_discrete_action_prediction:
         action_token_ids = select_action_token_ids(tokenizer, num_bins=ACTION_NUM_BINS)
-        action_slot_token_id = select_action_slot_token_id(tokenizer, action_token_ids)
+        action_slot_token_ids = select_action_slot_token_ids(tokenizer, action_token_ids, model=model)
         model.config.action_token_ids = action_token_ids
         model.config.action_num_bins = ACTION_NUM_BINS
-        model.config.action_slot_token_id = action_slot_token_id
+        model.config.action_slot_token_ids = action_slot_token_ids
+        model.config.action_slot_token_id = action_slot_token_ids["x"]
 
     # Create data module for action prediction
     data_module = make_action_prediction_data_module(
@@ -1005,7 +1048,7 @@ def train():
         training_args=training_args,
         mm_use_im_start_end=data_args.mm_use_im_start_end,
         action_token_ids=action_token_ids,
-        action_slot_token_id=action_slot_token_id,
+        action_slot_token_ids=action_slot_token_ids,
     )
 
     action_bin_edges = data_module.pop("action_bin_edges", None)
