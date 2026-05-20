@@ -8,6 +8,7 @@ continuous-action MAE/MSE without environment rollout.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 import h5py
@@ -18,6 +19,13 @@ from tqdm import tqdm
 from vila_u.model.builder import load_pretrained_model
 from vila_u.train.utils import get_checkpoint_path
 from vila_u.utils.action_tokenizer import discretize_actions
+
+
+def natural_key(value: str):
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", value)
+    ]
 
 
 def resolve_model_path(model_path: str) -> str:
@@ -39,23 +47,53 @@ def resolve_model_path(model_path: str) -> str:
     raise FileNotFoundError(f"Model path does not exist: {path}")
 
 
-def iter_libero_samples(data_root: str, action_chunk_size: int, stride: int):
+def iter_libero_samples(
+    data_root: str,
+    action_chunk_size: int,
+    stride: int,
+    task_file: str | None = None,
+    task_file_pattern: str | None = None,
+    max_task_files: int | None = None,
+    max_demos_per_task: int | None = None,
+):
     hdf5_files = sorted(
-        filename for filename in os.listdir(data_root) if filename.endswith(".hdf5")
+        (filename for filename in os.listdir(data_root) if filename.endswith(".hdf5")),
+        key=natural_key,
     )
     if not hdf5_files:
         raise FileNotFoundError(f"No .hdf5 files found under {data_root}")
+    if task_file is not None:
+        requested = os.path.basename(task_file)
+        hdf5_files = [filename for filename in hdf5_files if filename == requested]
+        if not hdf5_files:
+            raise FileNotFoundError(f"Task file {requested!r} not found under {data_root}")
+    if task_file_pattern is not None:
+        pattern = re.compile(task_file_pattern)
+        hdf5_files = [
+            filename
+            for filename in hdf5_files
+            if task_file_pattern in filename or pattern.search(filename)
+        ]
+        if not hdf5_files:
+            raise FileNotFoundError(
+                f"No HDF5 task files under {data_root} matched pattern {task_file_pattern!r}"
+            )
+    if max_task_files is not None:
+        hdf5_files = hdf5_files[:max_task_files]
 
     for filename in hdf5_files:
         data_file = os.path.join(data_root, filename)
         with h5py.File(data_file, "r") as h5_file:
             instruction = json.loads(h5_file["data"].attrs["problem_info"])["language_instruction"]
-            for demo_name in sorted(h5_file["data"].keys()):
+            demo_names = sorted(h5_file["data"].keys(), key=natural_key)
+            if max_demos_per_task is not None:
+                demo_names = demo_names[:max_demos_per_task]
+            for demo_name in demo_names:
                 demo = h5_file["data"][demo_name]
                 actions = demo["actions"][:]
                 num_frames = len(actions)
                 max_start = max(0, num_frames - action_chunk_size)
-                for timestep in range(0, max_start, stride):
+                for timestep in range(0, max_start + 1, stride):
                     yield {
                         "data_file": data_file,
                         "demo_name": demo_name,
@@ -81,6 +119,10 @@ def main():
     parser.add_argument("--device", default="cuda", help="Device, e.g. cuda or cpu.")
     parser.add_argument("--max-samples", type=int, default=500)
     parser.add_argument("--stride", type=int, default=1, help="Timestep stride while scanning demos.")
+    parser.add_argument("--task-file", default=None, help="Exact HDF5 task filename to evaluate.")
+    parser.add_argument("--task-file-pattern", default=None, help="Substring or regex for task files.")
+    parser.add_argument("--max-task-files", type=int, default=None)
+    parser.add_argument("--max-demos-per-task", type=int, default=None)
     parser.add_argument("--output-json", default=None)
     parser.add_argument(
         "--save-records",
@@ -106,6 +148,10 @@ def main():
     print(f"Data root: {args.data_root}")
     print(f"Max samples: {args.max_samples}")
     print(f"Stride: {args.stride}")
+    print(f"Task file: {args.task_file}")
+    print(f"Task file pattern: {args.task_file_pattern}")
+    print(f"Max task files: {args.max_task_files}")
+    print(f"Max demos per task: {args.max_demos_per_task}")
     print(f"Action shape: ({action_chunk_size}, {action_dim})")
     print(f"use_discrete_action_prediction = {getattr(model.config, 'use_discrete_action_prediction', None)}")
     print(f"use_hybrid_attention = {getattr(model.config, 'use_hybrid_attention', None)}")
@@ -137,6 +183,10 @@ def main():
         data_root=args.data_root,
         action_chunk_size=action_chunk_size,
         stride=max(1, args.stride),
+        task_file=args.task_file,
+        task_file_pattern=args.task_file_pattern,
+        max_task_files=args.max_task_files,
+        max_demos_per_task=args.max_demos_per_task,
     )
     for sample_idx, sample in enumerate(tqdm(sample_iter, total=args.max_samples)):
         if sample_idx >= args.max_samples:
@@ -281,6 +331,10 @@ def main():
         "data_root": args.data_root,
         "num_samples": len(maes),
         "stride": args.stride,
+        "task_file": args.task_file,
+        "task_file_pattern": args.task_file_pattern,
+        "max_task_files": args.max_task_files,
+        "max_demos_per_task": args.max_demos_per_task,
         "mae": float(np.mean(maes)) if maes else None,
         "mse": float(np.mean(mses)) if mses else None,
         "first_step_mae": float(np.mean(first_step_maes)) if first_step_maes else None,
