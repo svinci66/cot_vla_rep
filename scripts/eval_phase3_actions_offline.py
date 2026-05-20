@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from vila_u.model.builder import load_pretrained_model
 from vila_u.train.utils import get_checkpoint_path
-from vila_u.utils.action_tokenizer import discretize_actions
+from vila_u.utils.action_tokenizer import discretize_actions, normalize_action_bin_edges
 
 
 def natural_key(value: str):
@@ -155,6 +155,12 @@ def main():
     print(f"Action shape: ({action_chunk_size}, {action_dim})")
     print(f"use_discrete_action_prediction = {getattr(model.config, 'use_discrete_action_prediction', None)}")
     print(f"use_hybrid_attention = {getattr(model.config, 'use_hybrid_attention', None)}")
+    print(f"use_action_percentile_bins = {getattr(model.config, 'use_action_percentile_bins', None)}")
+    action_bin_edges = normalize_action_bin_edges(
+        getattr(model.config, "action_bin_edges", None),
+        device="cpu",
+    )
+    print(f"action_bin_edges = {'present' if action_bin_edges is not None else 'None'}")
     print()
 
     maes = []
@@ -220,8 +226,14 @@ def main():
             if action_dim > 6
             else None
         )
-        pred_bins = discretize_actions(torch.from_numpy(pred_actions)).numpy()
-        gt_bins = discretize_actions(torch.from_numpy(gt_actions)).numpy()
+        pred_bins = discretize_actions(
+            torch.from_numpy(pred_actions),
+            bin_edges=action_bin_edges,
+        ).numpy()
+        gt_bins = discretize_actions(
+            torch.from_numpy(gt_actions),
+            bin_edges=action_bin_edges,
+        ).numpy()
         token_matches = pred_bins == gt_bins
         token_accuracy = float(token_matches.mean())
         first_step_token_accuracy = float(token_matches[0].mean())
@@ -335,6 +347,8 @@ def main():
         "task_file_pattern": args.task_file_pattern,
         "max_task_files": args.max_task_files,
         "max_demos_per_task": args.max_demos_per_task,
+        "use_action_percentile_bins": getattr(model.config, "use_action_percentile_bins", None),
+        "has_action_bin_edges": action_bin_edges is not None,
         "mae": float(np.mean(maes)) if maes else None,
         "mse": float(np.mean(mses)) if mses else None,
         "first_step_mae": float(np.mean(first_step_maes)) if first_step_maes else None,
