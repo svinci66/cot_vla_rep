@@ -38,6 +38,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--init-state-offset", type=int, default=0)
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-dir", default=None, help="Optional directory for auto-named rollout summary JSON.")
+    parser.add_argument("--save-rollout-video", action="store_true", help="Save per-episode rollout videos.")
+    parser.add_argument("--video-dir", default=None, help="Directory for rollout mp4/gif files.")
+    parser.add_argument("--video-fps", type=int, default=20)
+    parser.add_argument("--video-format", default="both", choices=("mp4", "gif", "both"))
     parser.add_argument("--mujoco-gl", default=os.environ.get("MUJOCO_GL", "egl"))
     parser.add_argument("--request-timeout-ms", type=int, default=120000)
     parser.add_argument("--save-failures", action="store_true", help="Save per-episode final info even for failures.")
@@ -66,6 +70,54 @@ def obs_to_payload(obs: dict[str, Any]) -> dict[str, Any]:
                 value = value.astype(np.float32)
             payload[key] = value
     return payload
+
+
+def obs_frame(obs: dict[str, Any], camera: str) -> np.ndarray | None:
+    frame = obs.get(camera)
+    if frame is None:
+        return None
+    frame = np.asarray(frame)
+    if frame.ndim == 3 and frame.shape[-1] >= 3:
+        frame = frame[..., :3]
+    elif frame.ndim == 3 and frame.shape[0] >= 3:
+        frame = np.moveaxis(frame[:3], 0, -1)
+    else:
+        return None
+    if frame.dtype != np.uint8:
+        if frame.max(initial=0) <= 1.0:
+            frame = frame * 255.0
+        frame = np.clip(frame, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(frame)
+
+
+def save_episode_video(
+    frames: list[np.ndarray],
+    video_dir: Path,
+    episode_idx: int,
+    fps: int,
+    video_format: str,
+) -> dict[str, str]:
+    if not frames:
+        return {}
+    try:
+        import imageio.v2 as imageio
+    except ImportError as exc:
+        raise RuntimeError(
+            "Saving rollout videos requires imageio. Install it in the LIBERO env: "
+            "pip install imageio imageio-ffmpeg"
+        ) from exc
+
+    video_dir.mkdir(parents=True, exist_ok=True)
+    outputs = {}
+    if video_format in ("mp4", "both"):
+        mp4_path = video_dir / f"episode_{episode_idx:03d}.mp4"
+        imageio.mimsave(mp4_path, frames, fps=fps)
+        outputs["mp4"] = str(mp4_path)
+    if video_format in ("gif", "both"):
+        gif_path = video_dir / f"episode_{episode_idx:03d}.gif"
+        imageio.mimsave(gif_path, frames, fps=fps)
+        outputs["gif"] = str(gif_path)
+    return outputs
 
 
 def is_success(env, reward: float, done: bool, info: dict[str, Any]) -> bool:
@@ -127,6 +179,18 @@ def main() -> None:
         )
     if args.output_json:
         print(f"output_json: {args.output_json}")
+    video_dir = None
+    if args.save_rollout_video:
+        if args.video_dir:
+            video_dir = Path(args.video_dir)
+        elif args.output_dir:
+            video_dir = Path(args.output_dir) / "videos"
+        elif args.output_json:
+            video_dir = Path(args.output_json).parent / "videos"
+        else:
+            video_dir = Path("outputs") / "libero_rollout_videos"
+        print(f"video_dir: {video_dir}")
+        print(f"video_format: {args.video_format}, video_fps: {args.video_fps}")
 
     # Lightweight readiness handshake.
     socket.send(pack({"type": "hello", "suite": args.suite, "task_id": args.task_id}))
@@ -144,6 +208,11 @@ def main() -> None:
             success = False
             final_info = {}
             start_time = time.time()
+            frames = []
+            if args.save_rollout_video:
+                frame = obs_frame(obs, args.camera)
+                if frame is not None:
+                    frames.append(frame)
 
             for step_idx in range(args.max_steps):
                 request = {
@@ -165,6 +234,10 @@ def main() -> None:
                 action = np.clip(action, -1.0, 1.0).astype(np.float32)
 
                 obs, reward, done, info = env.step(action)
+                if args.save_rollout_video:
+                    frame = obs_frame(obs, args.camera)
+                    if frame is not None:
+                        frames.append(frame)
                 reward = float(reward)
                 episode_reward += reward
                 final_info = dict(info) if isinstance(info, dict) else {}
@@ -184,6 +257,14 @@ def main() -> None:
             }
             if args.save_failures or success:
                 episode_result["final_info"] = final_info
+            if args.save_rollout_video:
+                episode_result["video_paths"] = save_episode_video(
+                    frames=frames,
+                    video_dir=video_dir,
+                    episode_idx=episode_idx,
+                    fps=args.video_fps,
+                    video_format=args.video_format,
+                )
             results.append(episode_result)
             print(
                 f"episode={episode_idx + 1}/{args.episodes} "
