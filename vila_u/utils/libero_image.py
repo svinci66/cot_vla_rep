@@ -28,7 +28,7 @@ def rotate_libero_image_180(image: Any) -> Any:
     if isinstance(image, torch.Tensor):
         if image.ndim < 2:
             return image
-        if image.ndim >= 3 and image.shape[0] in (1, 3, 4) and image.shape[-1] not in (1, 3, 4):
+        if image.ndim >= 3 and image.shape[0] in (1, 3, 4):
             return torch.flip(image, dims=(-2, -1))
         return torch.flip(image, dims=(-3, -2) if image.ndim >= 3 else (-2, -1))
 
