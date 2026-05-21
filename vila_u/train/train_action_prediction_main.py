@@ -299,6 +299,45 @@ class DiscreteActionPredictionDataCollator:
 
 
 class ActionPredictionTrainer(VILAUTrainer):
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        """Support VILA-U component-style checkpoints.
+
+        VILA-U saves checkpoints as component directories (``llm/``,
+        ``vision_tower/``, ``mm_projector/``) plus trainer state files instead
+        of a top-level ``pytorch_model.bin``/``model.safetensors``. The model is
+        already constructed from ``config.resume_path`` before Trainer starts,
+        so asking the base Hugging Face Trainer to load model weights again
+        raises "Can't find a valid checkpoint". For these component-style
+        checkpoints we only skip that redundant model-weight load; Trainer still
+        restores optimizer/scheduler/scaler/rng/trainer_state in its normal
+        resume flow.
+        """
+
+        if resume_from_checkpoint:
+            checkpoint_dir = pathlib.Path(str(resume_from_checkpoint))
+            has_component_weights = any(
+                (checkpoint_dir / component).is_dir()
+                for component in ("llm", "vision_tower", "mm_projector")
+            )
+            has_trainer_state = (checkpoint_dir / "trainer_state.json").is_file()
+            has_hf_weights = any(
+                (checkpoint_dir / filename).is_file()
+                for filename in (
+                    "pytorch_model.bin",
+                    "model.safetensors",
+                    "adapter_model.bin",
+                    "adapter_model.safetensors",
+                )
+            )
+            if has_component_weights and has_trainer_state and not has_hf_weights:
+                mprint(
+                    "Detected VILA-U component checkpoint; "
+                    "skipping Hugging Face model-weight reload and resuming trainer state."
+                )
+                return
+
+        return super()._load_from_checkpoint(resume_from_checkpoint, model=model)
+
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         core_model = model
         while hasattr(core_model, "module"):
