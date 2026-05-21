@@ -299,6 +299,28 @@ class DiscreteActionPredictionDataCollator:
 
 
 class ActionPredictionTrainer(VILAUTrainer):
+    def _load_rng_state(self, checkpoint):
+        """Load Trainer RNG state under PyTorch 2.6+.
+
+        PyTorch 2.6 changed ``torch.load`` to default to ``weights_only=True``.
+        Hugging Face Trainer RNG checkpoints can contain NumPy RNG objects, so
+        the default safe weights-only loader rejects trusted local
+        ``rng_state.pth`` files. During this narrow Trainer RNG restore call,
+        force the historical behavior.
+        """
+
+        original_torch_load = torch.load
+
+        def torch_load_with_rng_objects(*args, **kwargs):
+            kwargs.setdefault("weights_only", False)
+            return original_torch_load(*args, **kwargs)
+
+        torch.load = torch_load_with_rng_objects
+        try:
+            return super()._load_rng_state(checkpoint)
+        finally:
+            torch.load = original_torch_load
+
     def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
         """Support VILA-U component-style checkpoints.
 
