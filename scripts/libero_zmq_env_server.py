@@ -36,6 +36,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--init-state-offset", type=int, default=0)
+    parser.add_argument(
+        "--demo-init-hdf5",
+        default=None,
+        help="Optional LIBERO HDF5 demo file whose init state should be used for reset.",
+    )
+    parser.add_argument(
+        "--demo-name",
+        default="demo_0",
+        help="Demo group name used with --demo-init-hdf5.",
+    )
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-dir", default=None, help="Optional directory for auto-named rollout summary JSON.")
     parser.add_argument("--save-rollout-video", action="store_true", help="Save per-episode rollout videos.")
@@ -60,6 +70,30 @@ def pack(payload: dict[str, Any]) -> bytes:
 
 def unpack(payload: bytes) -> dict[str, Any]:
     return msgpack.unpackb(payload, object_hook=m.decode, raw=False)
+
+
+def load_demo_init_state(hdf5_path: str, demo_name: str) -> np.ndarray:
+    import h5py
+
+    path = Path(hdf5_path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"Demo init HDF5 not found: {path}")
+
+    with h5py.File(path, "r") as h5_file:
+        data = h5_file["data"]
+        if demo_name not in data:
+            available = sorted(data.keys())[:10]
+            raise KeyError(
+                f"Demo {demo_name!r} not found in {path}. "
+                f"Available examples: {available}"
+            )
+        demo = data[demo_name]
+        if "init_state" in demo.attrs:
+            return np.asarray(demo.attrs["init_state"])
+        if "states" in demo and len(demo["states"]) > 0:
+            return np.asarray(demo["states"][0])
+
+    raise ValueError(f"No init_state attr or states[0] found for {demo_name!r} in {path}")
 
 
 def obs_to_payload(obs: dict[str, Any]) -> dict[str, Any]:
@@ -145,7 +179,14 @@ def main() -> None:
     task = task_suite.get_task(args.task_id)
     instruction = task.language
     bddl_file = get_task_bddl_file(task)
-    init_states = task_suite.get_task_init_states(args.task_id)
+    demo_init_state = None
+    init_states = None
+    init_state_source = "benchmark"
+    if args.demo_init_hdf5:
+        demo_init_state = load_demo_init_state(args.demo_init_hdf5, args.demo_name)
+        init_state_source = "demo_hdf5"
+    else:
+        init_states = task_suite.get_task_init_states(args.task_id)
 
     env_args = {
         "bddl_file_name": bddl_file,
@@ -171,6 +212,10 @@ def main() -> None:
     print(f"instruction: {instruction}")
     print(f"episodes: {args.episodes}, max_steps: {args.max_steps}")
     print(f"bddl_file: {bddl_file}")
+    print(f"init_state_source: {init_state_source}")
+    if demo_init_state is not None:
+        print(f"demo_init_hdf5: {args.demo_init_hdf5}")
+        print(f"demo_name: {args.demo_name}")
     if args.output_json is None and args.output_dir:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         output_dir = Path(args.output_dir)
@@ -202,8 +247,12 @@ def main() -> None:
     try:
         for episode_idx in range(args.episodes):
             obs = env.reset()
-            init_state_id = (args.init_state_offset + episode_idx) % len(init_states)
-            obs = env.set_init_state(init_states[init_state_id])
+            init_state_id = None
+            if demo_init_state is not None:
+                obs = env.set_init_state(demo_init_state)
+            else:
+                init_state_id = (args.init_state_offset + episode_idx) % len(init_states)
+                obs = env.set_init_state(init_states[init_state_id])
             episode_reward = 0.0
             success = False
             final_info = {}
@@ -249,6 +298,7 @@ def main() -> None:
             success_count += int(success)
             episode_result = {
                 "episode": episode_idx,
+                "init_state_source": init_state_source,
                 "init_state_id": init_state_id,
                 "success": bool(success),
                 "steps": step_idx + 1,
@@ -290,6 +340,10 @@ def main() -> None:
         "success_rate": success_count / max(args.episodes, 1),
         "max_steps": args.max_steps,
         "seed": args.seed,
+        "init_state_source": init_state_source,
+        "demo_init_hdf5": args.demo_init_hdf5,
+        "demo_name": args.demo_name if args.demo_init_hdf5 else None,
+        "init_state_offset": args.init_state_offset,
         "results": results,
     }
     print("=" * 80)

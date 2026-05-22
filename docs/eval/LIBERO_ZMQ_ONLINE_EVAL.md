@@ -52,6 +52,22 @@ python scripts/libero_zmq_env_server.py \
   --output-json outputs/libero_goal_task0_phase3_online.json
 ```
 
+For 1-demo overfit debugging, reset online rollout from the same training demo init state:
+
+```bash
+python scripts/libero_zmq_env_server.py \
+  --suite libero_goal \
+  --task-id 0 \
+  --episodes 1 \
+  --max-steps 300 \
+  --host 127.0.0.1 \
+  --port 5555 \
+  --demo-init-hdf5 /home/ubuntu/sj/LIBERO/libero/datasets/libero_goal/open_the_middle_drawer_of_the_cabinet_demo.hdf5 \
+  --demo-name demo_0 \
+  --save-rollout-video \
+  --output-json outputs/online_task0_demo0/summary.json
+```
+
 ## Outputs
 
 The server reports online success rate:
@@ -69,4 +85,5 @@ Offline MAE/token accuracy remain useful diagnostics but are not replacements fo
 - Model inference always runs in the VILA-U process.
 - Observations are sent as NumPy arrays through ZeroMQ/msgpack.
 - Actions are clipped to `[-1, 1]` before stepping the environment.
+- `--demo-init-hdf5` first reads `demo.attrs["init_state"]`, then falls back to `demo["states"][0]`.
 - Start with 1 task and 5-10 episodes before running benchmark-scale evaluation.
