@@ -1,19 +1,28 @@
 #!/bin/bash
 
 # Offline action eval for the single-task action-only overfit checkpoint.
-# Reports token accuracy, MAE, gripper sign accuracy, and per-dimension MAE.
+# Defaults to the strict training-distribution eval path.
 
 MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/cot-vla/cot_vla_rep/checkpoints/vila-u-action-only-overfit-1task-10demo-fresh-20260519_180135"}
 DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
 DEVICE=${DEVICE:-cuda}
 MAX_SAMPLES=${MAX_SAMPLES:-2000}
-STRIDE=${STRIDE:-1}
 MAX_TASK_FILES=${MAX_TASK_FILES:-1}
 MAX_DEMOS_PER_TASK=${MAX_DEMOS_PER_TASK:-10}
 TASK_FILE=${TASK_FILE:-}
 TASK_FILE_PATTERN=${TASK_FILE_PATTERN:-}
 OUTPUT_JSON=${OUTPUT_JSON:-"outputs/action_only_overfit_offline_eval.json"}
 SAVE_RECORDS=${SAVE_RECORDS:-False}
+STRICT_TRAINING_DISTRIBUTION=${STRICT_TRAINING_DISTRIBUTION:-True}
+
+if [ "$STRICT_TRAINING_DISTRIBUTION" = "True" ] || [ "$STRICT_TRAINING_DISTRIBUTION" = "true" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export MODEL_PATH DATA_ROOT DEVICE MAX_SAMPLES MAX_TASK_FILES MAX_DEMOS_PER_TASK
+    export TASK_FILE TASK_FILE_PATTERN OUTPUT_JSON SAVE_RECORDS
+    exec "$SCRIPT_DIR/eval_action_only_training_distribution_offline.sh"
+fi
+
+STRIDE=${STRIDE:-1}
 
 cmd=(
     python scripts/eval_phase3_actions_offline.py
