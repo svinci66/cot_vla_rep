@@ -302,13 +302,19 @@ def main():
         use_hybrid_attention=bool(getattr(model.config, "use_hybrid_attention", False)),
         action_bin_edges=action_bin_edges,
     )
+
+    def collate_with_continuous_actions(batch):
+        output = collator(batch)
+        output["action_labels"] = torch.stack([item["action_labels"] for item in batch])
+        return output
+
     dataloader = DataLoader(
         eval_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=str(device).startswith("cuda"),
-        collate_fn=collator,
+        collate_fn=collate_with_continuous_actions,
     )
 
     print("=" * 72)
