@@ -3,7 +3,7 @@
 # Four-GPU action-only single-task multi-demo debug run.
 # Keeps the action-only overfit knobs from the 1-GPU wrapper, but launches via torchrun.
 
-export OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-only-1task-10demo-paper-aligned"}
+export OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-only-1task-50demo-paper-aligned"}
 
 export SINGLE_GPU_MODE=False
 export NUM_GPUS=${NUM_GPUS:-4}
@@ -19,7 +19,7 @@ export TUNE_DEPTH_TRANSFORMER=True
 export TUNE_VISION_TOWER=False
 
 export MAX_TASK_FILES=${MAX_TASK_FILES:-1}
-export MAX_DEMOS_PER_TASK=${MAX_DEMOS_PER_TASK:-10}
+export MAX_DEMOS_PER_TASK=${MAX_DEMOS_PER_TASK:-50}
 export TASK_FILE=${TASK_FILE:-open_the_middle_drawer_of_the_cabinet_demo.hdf5}
 export TASK_FILE_PATTERN=${TASK_FILE_PATTERN:-}
 
