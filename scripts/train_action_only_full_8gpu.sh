@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Eight-GPU action-only full-dataset training.
+# BATCH_SIZE is global in scripts/train/train_action_prediction.sh; default 64 means 8 per GPU.
+
+export OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-only-full-8gpu-bs64"}
+
+export SINGLE_GPU_MODE=False
+export NUM_GPUS=${NUM_GPUS:-8}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+
+export USE_VISUAL_COT=False
+export USE_VISUAL_COT_LOSS=False
+export USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
+
+export TUNE_LANGUAGE_MODEL=True
+export TUNE_MM_PROJECTOR=True
+export TUNE_DEPTH_TRANSFORMER=True
+export TUNE_VISION_TOWER=False
+
+export MAX_TASK_FILES=${MAX_TASK_FILES:-}
+export MAX_DEMOS_PER_TASK=${MAX_DEMOS_PER_TASK:-}
+export TASK_FILE=${TASK_FILE:-}
+export TASK_FILE_PATTERN=${TASK_FILE_PATTERN:-}
+
+export NUM_EPOCHS=${NUM_EPOCHS:-50}
+export BATCH_SIZE=${BATCH_SIZE:-64}
+export ACC_STEP=${ACC_STEP:-1}
+export LEARNING_RATE=${LEARNING_RATE:-3e-5}
+export SAVE_STEPS=${SAVE_STEPS:-500}
+export SAVE_ONLY_TRAINABLE=${SAVE_ONLY_TRAINABLE:-True}
+export REPORT_TO=${REPORT_TO:-none}
+export WANDB_DISABLED=${WANDB_DISABLED:-true}
+export DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-8}
+export MASTER_PORT=${MASTER_PORT:-25001}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/train/train_action_prediction.sh" "$@"
