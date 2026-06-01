@@ -35,6 +35,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera", default="agentview_image")
     parser.add_argument("--subgoal-mode", choices=("none", "generated"), default="none")
     parser.add_argument("--cfg", type=float, default=3.0, help="CFG for generated subgoal mode.")
+    parser.add_argument(
+        "--replan-every-step",
+        action="store_true",
+        help=(
+            "Diagnostic mode: discard any cached action chunk on every request "
+            "and execute only the first action from a newly predicted chunk."
+        ),
+    )
     parser.add_argument("--debug-jsonl", default=None, help="Optional path for per-chunk action token/bin debug records.")
     return parser.parse_args()
 
@@ -99,12 +107,14 @@ def main() -> None:
     print(f"model: {resolved_model_path}")
     print(f"device: {args.device}")
     print(f"subgoal_mode: {args.subgoal_mode}")
+    print(f"replan_every_step: {args.replan_every_step}")
     if args.debug_jsonl:
         print(f"debug_jsonl: {args.debug_jsonl}")
 
     _, model, image_processor, _ = load_pretrained_model(
         model_path=resolved_model_path,
         device=args.device,
+        device_map={"": args.device} if args.device != "auto" else "auto",
     )
     model.eval()
 
@@ -138,6 +148,8 @@ def main() -> None:
             if episode != current_episode:
                 action_queue.clear()
                 current_episode = episode
+            if args.replan_every_step:
+                action_queue.clear()
 
             obs = request["obs"]
             instruction = request["instruction"]

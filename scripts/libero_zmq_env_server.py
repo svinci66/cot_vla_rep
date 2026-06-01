@@ -46,6 +46,24 @@ def parse_args() -> argparse.Namespace:
         default="demo_0",
         help="Demo group name used with --demo-init-hdf5.",
     )
+    parser.add_argument(
+        "--demo-names",
+        nargs="+",
+        default=None,
+        help="Optional list of demo group names to evaluate with --demo-init-hdf5.",
+    )
+    parser.add_argument(
+        "--demo-start",
+        type=int,
+        default=None,
+        help="Optional first demo index for --demo-init-hdf5, e.g. 0 for demo_0.",
+    )
+    parser.add_argument(
+        "--demo-count",
+        type=int,
+        default=None,
+        help="Optional number of demos starting at --demo-start.",
+    )
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-dir", default=None, help="Optional directory for auto-named rollout summary JSON.")
     parser.add_argument("--save-rollout-video", action="store_true", help="Save per-episode rollout videos.")
@@ -96,6 +114,18 @@ def load_demo_init_state(hdf5_path: str, demo_name: str) -> np.ndarray:
     raise ValueError(f"No init_state attr or states[0] found for {demo_name!r} in {path}")
 
 
+def resolve_demo_names(args: argparse.Namespace) -> list[str]:
+    if args.demo_names:
+        return list(args.demo_names)
+    if args.demo_start is not None or args.demo_count is not None:
+        start = 0 if args.demo_start is None else args.demo_start
+        count = 1 if args.demo_count is None else args.demo_count
+        if count <= 0:
+            raise ValueError("--demo-count must be positive")
+        return [f"demo_{idx}" for idx in range(start, start + count)]
+    return [args.demo_name]
+
+
 def obs_to_payload(obs: dict[str, Any]) -> dict[str, Any]:
     payload = {}
     for key, value in obs.items():
@@ -130,6 +160,7 @@ def save_episode_video(
     episode_idx: int,
     fps: int,
     video_format: str,
+    prefix: str = "episode",
 ) -> dict[str, str]:
     if not frames:
         return {}
@@ -144,11 +175,11 @@ def save_episode_video(
     video_dir.mkdir(parents=True, exist_ok=True)
     outputs = {}
     if video_format in ("mp4", "both"):
-        mp4_path = video_dir / f"episode_{episode_idx:03d}.mp4"
+        mp4_path = video_dir / f"{prefix}_{episode_idx:03d}.mp4"
         imageio.mimsave(mp4_path, frames, fps=fps)
         outputs["mp4"] = str(mp4_path)
     if video_format in ("gif", "both"):
-        gif_path = video_dir / f"episode_{episode_idx:03d}.gif"
+        gif_path = video_dir / f"{prefix}_{episode_idx:03d}.gif"
         imageio.mimsave(gif_path, frames, fps=fps)
         outputs["gif"] = str(gif_path)
     return outputs
@@ -179,11 +210,11 @@ def main() -> None:
     task = task_suite.get_task(args.task_id)
     instruction = task.language
     bddl_file = get_task_bddl_file(task)
-    demo_init_state = None
     init_states = None
     init_state_source = "benchmark"
+    demo_names = []
     if args.demo_init_hdf5:
-        demo_init_state = load_demo_init_state(args.demo_init_hdf5, args.demo_name)
+        demo_names = resolve_demo_names(args)
         init_state_source = "demo_hdf5"
     else:
         init_states = task_suite.get_task_init_states(args.task_id)
@@ -213,9 +244,9 @@ def main() -> None:
     print(f"episodes: {args.episodes}, max_steps: {args.max_steps}")
     print(f"bddl_file: {bddl_file}")
     print(f"init_state_source: {init_state_source}")
-    if demo_init_state is not None:
+    if args.demo_init_hdf5:
         print(f"demo_init_hdf5: {args.demo_init_hdf5}")
-        print(f"demo_name: {args.demo_name}")
+        print(f"demo_names: {demo_names}")
     if args.output_json is None and args.output_dir:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         output_dir = Path(args.output_dir)
@@ -244,8 +275,19 @@ def main() -> None:
 
     results = []
     success_count = 0
+    total_episodes = args.episodes * max(len(demo_names), 1)
     try:
-        for episode_idx in range(args.episodes):
+        rollout_specs = []
+        if args.demo_init_hdf5:
+            for demo_name in demo_names:
+                demo_init_state = load_demo_init_state(args.demo_init_hdf5, demo_name)
+                for episode_idx in range(args.episodes):
+                    rollout_specs.append((demo_name, demo_init_state, episode_idx))
+        else:
+            for episode_idx in range(args.episodes):
+                rollout_specs.append((None, None, episode_idx))
+
+        for rollout_idx, (demo_name, demo_init_state, episode_idx) in enumerate(rollout_specs):
             obs = env.reset()
             init_state_id = None
             if demo_init_state is not None:
@@ -266,7 +308,7 @@ def main() -> None:
             for step_idx in range(args.max_steps):
                 request = {
                     "type": "act",
-                    "episode": episode_idx,
+                    "episode": rollout_idx,
                     "step": step_idx,
                     "instruction": instruction,
                     "camera": args.camera,
@@ -298,8 +340,10 @@ def main() -> None:
             success_count += int(success)
             episode_result = {
                 "episode": episode_idx,
+                "rollout_index": rollout_idx,
                 "init_state_source": init_state_source,
                 "init_state_id": init_state_id,
+                "demo_name": demo_name,
                 "success": bool(success),
                 "steps": step_idx + 1,
                 "reward": episode_reward,
@@ -314,9 +358,12 @@ def main() -> None:
                     episode_idx=episode_idx,
                     fps=args.video_fps,
                     video_format=args.video_format,
+                    prefix=demo_name or "episode",
                 )
             results.append(episode_result)
+            demo_label = f" demo={demo_name}" if demo_name is not None else ""
             print(
+                f"rollout={rollout_idx + 1}/{total_episodes}{demo_label} "
                 f"episode={episode_idx + 1}/{args.episodes} "
                 f"success={success} steps={step_idx + 1} "
                 f"reward={episode_reward:.3f} elapsed={elapsed:.1f}s"
@@ -336,13 +383,15 @@ def main() -> None:
         "task_name": task.name,
         "instruction": instruction,
         "episodes": args.episodes,
+        "total_episodes": total_episodes,
         "success_count": success_count,
-        "success_rate": success_count / max(args.episodes, 1),
+        "success_rate": success_count / max(total_episodes, 1),
         "max_steps": args.max_steps,
         "seed": args.seed,
         "init_state_source": init_state_source,
         "demo_init_hdf5": args.demo_init_hdf5,
-        "demo_name": args.demo_name if args.demo_init_hdf5 else None,
+        "demo_name": args.demo_name if args.demo_init_hdf5 and not args.demo_names else None,
+        "demo_names": demo_names if args.demo_init_hdf5 else None,
         "init_state_offset": args.init_state_offset,
         "results": results,
     }
