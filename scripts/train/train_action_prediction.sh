@@ -22,6 +22,9 @@ NUM_EPOCHS=${NUM_EPOCHS:-1}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}
 SAVE_STEPS=${SAVE_STEPS:-500}
+SAVE_STRATEGY=${SAVE_STRATEGY:-no}
+LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS=${LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS:-10}
+SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-1}
 MASTER_PORT=${MASTER_PORT:-25001}
 
 IMAGE_ASPECT_RATIO=${IMAGE_ASPECT_RATIO:-"resize"}
@@ -241,6 +244,10 @@ echo "  Sync Transformers Patch: $SYNC_TRANSFORMERS_PATCH"
 echo "  Resume Training: $RESUME_TRAINING"
 echo "  Auto New Output Dir: $AUTO_NEW_OUTPUT_DIR"
 echo "  Save Only Trainable: $SAVE_ONLY_TRAINABLE"
+echo "  Save Strategy: $SAVE_STRATEGY"
+echo "  Save Steps: $SAVE_STEPS"
+echo "  Save Total Limit: $SAVE_TOTAL_LIMIT"
+echo "  Lightweight Eval Checkpoint Epochs: $LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS"
 echo "=========================================="
 
 # Build training args
@@ -265,10 +272,11 @@ train_args=(
     --per_device_eval_batch_size 4
     --gradient_accumulation_steps "$acc_step"
     --evaluation_strategy no
-    --save_strategy steps
+    --save_strategy "$SAVE_STRATEGY"
     --save_steps "$SAVE_STEPS"
-    --save_total_limit 3
+    --save_total_limit "$SAVE_TOTAL_LIMIT"
     --save_only_trainable "$SAVE_ONLY_TRAINABLE"
+    --lightweight_eval_checkpoint_epochs "$LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS"
     --learning_rate "$LEARNING_RATE"
     --weight_decay 0.
     --warmup_ratio "$WARMUP_RATIO"

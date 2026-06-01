@@ -38,6 +38,16 @@ class TrainingArguments(transformers.TrainingArguments):
         default=False,
         metadata={"help": "Save only parameters with requires_grad=True in model checkpoints."},
     )
+    lightweight_eval_checkpoint_epochs: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "Save lightweight model-only checkpoints every N epochs for "
+                "evaluation/training-state inspection. These checkpoints omit "
+                "optimizer, scheduler, and RNG state."
+            )
+        },
+    )
     chunk_sampler: bool = field(default=False)
     model_dtype: str = field(default="torch.bfloat16")
     model_max_length: int = field(

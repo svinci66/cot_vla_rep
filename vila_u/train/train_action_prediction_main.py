@@ -6,12 +6,14 @@ Based on VILA-U's train.py framework with action prediction support
 import logging
 import os
 import pathlib
+import shutil
 import torch
 import transformers
 
 from typing import Dict, Optional, Tuple, cast
 from dataclasses import dataclass, field
 from torch.nn.utils.rnn import pad_sequence
+from transformers import TrainerCallback
 
 # Import vila_u modules (these don't trigger the numpy issue)
 from vila_u import conversation as conversation_lib
@@ -552,6 +554,66 @@ def safe_save_model_for_hf_trainer(trainer, output_dir: str):
             state_dict=cpu_state_dict,
             save_only_trainable=getattr(trainer.args, "save_only_trainable", False),
         )
+
+
+class LightweightEvalCheckpointCallback(TrainerCallback):
+    """Save model-only checkpoints every N epochs for eval/debug.
+
+    These checkpoints intentionally do not include optimizer/scheduler/RNG state,
+    so they are compact and suitable for offline/online evaluation but not for
+    exact training resume.
+    """
+
+    def __init__(self, every_n_epochs: int, save_only_trainable: bool = True):
+        self.every_n_epochs = int(every_n_epochs)
+        self.save_only_trainable = bool(save_only_trainable)
+        self._last_saved_epoch = 0
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        if self.every_n_epochs <= 0 or model is None:
+            return control
+        if not getattr(state, "is_world_process_zero", True):
+            return control
+
+        completed_epoch = int(state.epoch or 0)
+        if completed_epoch <= 0:
+            return control
+        if abs(float(state.epoch or 0.0) - completed_epoch) > 1e-6:
+            return control
+        if completed_epoch % self.every_n_epochs != 0:
+            return control
+        if completed_epoch == self._last_saved_epoch:
+            return control
+
+        output_dir = pathlib.Path(args.output_dir) / f"eval-checkpoint-epoch-{completed_epoch}"
+        tmp_output_dir = output_dir.with_name(f"tmp-{output_dir.name}")
+        if tmp_output_dir.exists():
+            shutil.rmtree(tmp_output_dir)
+        tmp_output_dir.mkdir(parents=True, exist_ok=True)
+
+        state_dict = model.state_dict()
+        cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
+        del state_dict
+        model.save_pretrained(
+            str(tmp_output_dir),
+            state_dict=cpu_state_dict,
+            save_only_trainable=self.save_only_trainable,
+        )
+        state.save_to_json(str(tmp_output_dir / "trainer_state.json"))
+        (tmp_output_dir / "README.md").write_text(
+            "Lightweight evaluation checkpoint.\n\n"
+            "- Includes model/config/tokenizer files needed for eval.\n"
+            "- Includes trainer_state.json for training-state inspection.\n"
+            "- Omits optimizer.pt, scheduler.pt, rng_state.pth, and scaler.pt.\n"
+            "- Not intended for exact training resume.\n",
+            encoding="utf-8",
+        )
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        tmp_output_dir.rename(output_dir)
+        self._last_saved_epoch = completed_epoch
+        print(f"Saved lightweight eval checkpoint to {output_dir}")
+        return control
 
 
 def smart_tokenizer_and_embedding_resize(
@@ -1134,6 +1196,13 @@ def train():
 
     # Add auto-resume callback
     trainer.add_callback(AutoResumeCallback())
+    if int(getattr(training_args, "lightweight_eval_checkpoint_epochs", 0)) > 0:
+        trainer.add_callback(
+            LightweightEvalCheckpointCallback(
+                every_n_epochs=training_args.lightweight_eval_checkpoint_epochs,
+                save_only_trainable=getattr(training_args, "save_only_trainable", True),
+            )
+        )
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
