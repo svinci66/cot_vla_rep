@@ -557,20 +557,41 @@ def safe_save_model_for_hf_trainer(trainer, output_dir: str):
 
 
 class LightweightEvalCheckpointCallback(TrainerCallback):
-    """Save model-only checkpoints every N epochs for eval/debug.
+    """Save model-only checkpoints at selected epochs for eval/debug.
 
     These checkpoints intentionally do not include optimizer/scheduler/RNG state,
     so they are compact and suitable for offline/online evaluation but not for
     exact training resume.
     """
 
-    def __init__(self, every_n_epochs: int, save_only_trainable: bool = True):
+    def __init__(
+        self,
+        every_n_epochs: int = 0,
+        epoch_list: str = "",
+        save_only_trainable: bool = True,
+    ):
         self.every_n_epochs = int(every_n_epochs)
+        self.epoch_list = self._parse_epoch_list(epoch_list)
         self.save_only_trainable = bool(save_only_trainable)
         self._last_saved_epoch = 0
 
+    @staticmethod
+    def _parse_epoch_list(epoch_list: str) -> set[int]:
+        epochs = set()
+        for value in str(epoch_list or "").split(","):
+            value = value.strip()
+            if not value:
+                continue
+            epoch = int(value)
+            if epoch <= 0:
+                raise ValueError("Lightweight checkpoint epoch list must contain positive integers")
+            epochs.add(epoch)
+        return epochs
+
     def on_epoch_end(self, args, state, control, model=None, **kwargs):
-        if self.every_n_epochs <= 0 or model is None:
+        if self.every_n_epochs <= 0 and not self.epoch_list:
+            return control
+        if model is None:
             return control
         if not getattr(state, "is_world_process_zero", True):
             return control
@@ -580,7 +601,11 @@ class LightweightEvalCheckpointCallback(TrainerCallback):
             return control
         if abs(float(state.epoch or 0.0) - completed_epoch) > 1e-6:
             return control
-        if completed_epoch % self.every_n_epochs != 0:
+        if self.epoch_list:
+            should_save = completed_epoch in self.epoch_list
+        else:
+            should_save = completed_epoch % self.every_n_epochs == 0
+        if not should_save:
             return control
         if completed_epoch == self._last_saved_epoch:
             return control
@@ -1196,10 +1221,13 @@ def train():
 
     # Add auto-resume callback
     trainer.add_callback(AutoResumeCallback())
-    if int(getattr(training_args, "lightweight_eval_checkpoint_epochs", 0)) > 0:
+    lightweight_checkpoint_epochs = int(getattr(training_args, "lightweight_eval_checkpoint_epochs", 0))
+    lightweight_checkpoint_epoch_list = getattr(training_args, "lightweight_eval_checkpoint_epoch_list", "")
+    if lightweight_checkpoint_epochs > 0 or lightweight_checkpoint_epoch_list:
         trainer.add_callback(
             LightweightEvalCheckpointCallback(
-                every_n_epochs=training_args.lightweight_eval_checkpoint_epochs,
+                every_n_epochs=lightweight_checkpoint_epochs,
+                epoch_list=lightweight_checkpoint_epoch_list,
                 save_only_trainable=getattr(training_args, "save_only_trainable", True),
             )
         )

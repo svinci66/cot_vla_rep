@@ -48,6 +48,16 @@ class TrainingArguments(transformers.TrainingArguments):
             )
         },
     )
+    lightweight_eval_checkpoint_epoch_list: str = field(
+        default="",
+        metadata={
+            "help": (
+                "Comma-separated epoch numbers for lightweight model-only "
+                "checkpoints, e.g. '10,12,15'. Takes precedence over "
+                "lightweight_eval_checkpoint_epochs when non-empty."
+            )
+        },
+    )
     chunk_sampler: bool = field(default=False)
     model_dtype: str = field(default="torch.bfloat16")
     model_max_length: int = field(

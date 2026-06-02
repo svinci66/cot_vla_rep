@@ -24,6 +24,7 @@ WARMUP_RATIO=${WARMUP_RATIO:-0.03}
 SAVE_STEPS=${SAVE_STEPS:-500}
 SAVE_STRATEGY=${SAVE_STRATEGY:-no}
 LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS=${LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS:-10}
+LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCH_LIST=${LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCH_LIST:-}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-1}
 MASTER_PORT=${MASTER_PORT:-25001}
 
@@ -248,6 +249,7 @@ echo "  Save Strategy: $SAVE_STRATEGY"
 echo "  Save Steps: $SAVE_STEPS"
 echo "  Save Total Limit: $SAVE_TOTAL_LIMIT"
 echo "  Lightweight Eval Checkpoint Epochs: $LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS"
+echo "  Lightweight Eval Checkpoint Epoch List: ${LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCH_LIST:-none}"
 echo "=========================================="
 
 # Build training args
@@ -277,6 +279,7 @@ train_args=(
     --save_total_limit "$SAVE_TOTAL_LIMIT"
     --save_only_trainable "$SAVE_ONLY_TRAINABLE"
     --lightweight_eval_checkpoint_epochs "$LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS"
+    --lightweight_eval_checkpoint_epoch_list "$LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCH_LIST"
     --learning_rate "$LEARNING_RATE"
     --weight_decay 0.
     --warmup_ratio "$WARMUP_RATIO"
