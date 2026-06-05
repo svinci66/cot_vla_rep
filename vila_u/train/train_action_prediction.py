@@ -1,13 +1,23 @@
 """
-VILA-U 动作预测训练脚本
+Deprecated VILA-U continuous-regression action training script.
 
-训练 VILA-U 的动作预测头，使其能够从观察图像和语言指令预测机器人动作。
+Do not use this entrypoint for CoT-VLA/OpenVLA-style action-token training.
+Use ``python -m vila_u.train.train_action_prediction_mem`` or
+``vila_u.train.train_action_prediction_main`` through the shell wrappers
+instead. This legacy script uses continuous L1 regression and is kept only for
+historical reference.
 
-训练策略：
+旧说明：
 - 冻结视觉编码器 (vision_tower)
 - 训练 LLM + 多模态投影器 + 动作预测头
 - 使用 L1 Loss 进行动作回归
 """
+
+raise RuntimeError(
+    "vila_u.train.train_action_prediction is deprecated and uses continuous "
+    "L1 regression. Use train_action_prediction_mem.py / "
+    "train_action_prediction_main.py for discrete action-token training."
+)
 
 import os
 import argparse

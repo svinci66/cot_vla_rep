@@ -86,7 +86,7 @@ def check_percentile_bins_defaults() -> CheckResult:
     ok = has_all(
         config,
         [
-            "use_action_percentile_bins = kwargs.pop(\"use_action_percentile_bins\", True)",
+            "use_action_percentile_bins = kwargs.pop(\"use_action_percentile_bins\", False)",
             "action_bin_low_percentile = kwargs.pop(\"action_bin_low_percentile\", 1.0)",
             "action_bin_high_percentile = kwargs.pop(\"action_bin_high_percentile\", 99.0)",
         ],
@@ -101,15 +101,15 @@ def check_percentile_bins_defaults() -> CheckResult:
     ok = ok and has_all(
         script,
         [
-            "USE_ACTION_PERCENTILE_BINS=${USE_ACTION_PERCENTILE_BINS:-True}",
+            "USE_ACTION_PERCENTILE_BINS=${USE_ACTION_PERCENTILE_BINS:-False}",
             "ACTION_BIN_LOW_PERCENTILE=${ACTION_BIN_LOW_PERCENTILE:-1.0}",
             "ACTION_BIN_HIGH_PERCENTILE=${ACTION_BIN_HIGH_PERCENTILE:-99.0}",
         ],
     )
     return CheckResult(
-        "1st-99th percentile action bins",
+        "OpenVLA-style uniform action bins by default",
         ok,
-        "expects percentile bins enabled by default and saved into config",
+        "expects percentile bins disabled by default while keeping optional percentile support",
     )
 
 
@@ -265,12 +265,10 @@ def check_checkpoint_config(config_path: Path) -> list[CheckResult]:
 
     results.append(
         CheckResult(
-            "checkpoint percentile bins",
-            config.get("use_action_percentile_bins") is True
-            and config.get("action_bin_edges") is not None
-            and config.get("action_bin_low_percentile") == 1.0
-            and config.get("action_bin_high_percentile") == 99.0,
-            "expects persisted 1st-99th percentile bin edges",
+            "checkpoint uniform bins",
+            config.get("use_action_percentile_bins") is False
+            and config.get("action_bin_edges") is None,
+            "expects uniform bins by default with no persisted percentile edges",
         )
     )
 

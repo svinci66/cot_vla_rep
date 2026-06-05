@@ -174,18 +174,13 @@ def check_checkpoint_config(config_path: Path) -> list[CheckResult]:
         and action_token_ids == list(range(31744, 32000))
     )
     slot_ok = slot_ids == {"x": 31741, "theta": 31742, "gripper": 31743}
-    bin_ok = (
-        config.get("use_action_percentile_bins") is True
-        and isinstance(bin_edges, list)
-        and len(bin_edges) == 7
-        and all(len(row) == ACTION_NUM_BINS + 1 for row in bin_edges)
-    )
+    bin_ok = config.get("use_action_percentile_bins") is False and bin_edges is None
     hybrid_ok = config.get("use_hybrid_attention") is True
 
     return [
         CheckResult("checkpoint action ids", token_ok, "expects exactly 31744..31999"),
         CheckResult("checkpoint typed slot ids", slot_ok, "expects 31741/31742/31743"),
-        CheckResult("checkpoint percentile edges", bin_ok, "expects 7 x 257 bin edges"),
+        CheckResult("checkpoint uniform bins", bin_ok, "expects percentile bins disabled and no bin edges"),
         CheckResult("checkpoint hybrid attention", hybrid_ok, "expects use_hybrid_attention=True"),
     ]
 

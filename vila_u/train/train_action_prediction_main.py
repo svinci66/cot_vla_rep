@@ -145,7 +145,7 @@ class ActionPredictionArguments:
         metadata={"help": "Weight for discrete action token loss"}
     )
     use_action_percentile_bins: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Use per-dimension action bin edges from training-set percentiles"}
     )
     action_bin_low_percentile: float = field(
