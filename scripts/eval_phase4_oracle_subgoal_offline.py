@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from vila_u.model.builder import load_pretrained_model
 from vila_u.train.utils import get_checkpoint_path
+from vila_u.utils.libero_action import libero_raw_actions_to_model_actions
 
 
 def resolve_model_path(model_path: str) -> str:
@@ -53,7 +54,7 @@ def iter_libero_samples(data_root: str, action_chunk_size: int, subgoal_offset: 
             instruction = json.loads(h5_file["data"].attrs["problem_info"])["language_instruction"]
             for demo_name in sorted(h5_file["data"].keys()):
                 demo = h5_file["data"][demo_name]
-                actions = demo["actions"][:]
+                actions = libero_raw_actions_to_model_actions(demo["actions"][:])
                 num_frames = len(actions)
                 max_start = max(0, num_frames - action_chunk_size)
                 for timestep in range(max_start):

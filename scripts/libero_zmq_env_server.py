@@ -20,6 +20,8 @@ import msgpack_numpy as m
 import numpy as np
 import zmq
 
+from vila_u.utils.libero_action import model_actions_to_libero_raw_actions
+
 m.patch()
 
 
@@ -322,7 +324,7 @@ def main() -> None:
                 action = np.asarray(response["action"], dtype=np.float32).reshape(-1)
                 if action.shape[0] != 7:
                     raise ValueError(f"Expected action shape (7,), got {action.shape}")
-                action = np.clip(action, -1.0, 1.0).astype(np.float32)
+                action = model_actions_to_libero_raw_actions(action)
 
                 obs, reward, done, info = env.step(action)
                 if args.save_rollout_video:

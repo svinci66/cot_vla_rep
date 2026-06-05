@@ -18,6 +18,7 @@ from torch.utils.data import Dataset
 from PIL import Image
 from typing import Optional
 from vila_u.utils.libero_image import rotate_libero_image_180
+from vila_u.utils.libero_action import libero_raw_actions_to_model_actions
 
 
 class LiberoGoalDataset(Dataset):
@@ -304,9 +305,9 @@ class LiberoGoalDataset(Dataset):
                 # Get actions directly
                 actions = demo['actions'][t : t + self.action_chunk_size]  # [chunk, 7]
 
-            # Normalize actions to [-1, 1]
-            # LIBERO actions are typically already normalized, but we clip to be safe
-            actions = np.clip(actions, -1.0, 1.0)
+            # Convert LIBERO raw gripper convention (-1=open, +1=close) to
+            # OpenVLA-style model action convention (+1=open, -1=close).
+            actions = libero_raw_actions_to_model_actions(actions)
             action_tensor = torch.from_numpy(actions).float()
 
         item = {

@@ -42,6 +42,7 @@ from vila_u.utils.action_tokenizer import (
     select_action_token_ids,
     token_ids_to_bins,
 )
+from vila_u.utils.libero_action import libero_raw_actions_to_model_actions
 from vila_u.utils.hybrid_attention import (
     build_action_token_position_mask,
     build_hybrid_attention_mask,
@@ -902,6 +903,7 @@ def _compute_dataset_action_bin_edges_local(train_dataset, data_args: ActionPred
                 else:
                     timestep = sample['timestep']
                     actions = demo['actions'][timestep : timestep + data_args.action_chunk_size]
+        actions = libero_raw_actions_to_model_actions(actions)
         action_chunks.append(torch.as_tensor(actions, dtype=torch.float32))
 
     if not action_chunks:

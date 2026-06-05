@@ -101,8 +101,44 @@ def test_explicit_task_file_selection():
         assert dataset.samples[0]["file"].endswith("task_10_demo.hdf5")
 
 
+def test_raw_libero_gripper_is_converted_to_model_space():
+    from vila_u.data.libero_dataset_v2 import LiberoGoalDataset
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "debug_task_demo.hdf5")
+        with h5py.File(path, "w") as h5_file:
+            data_group = h5_file.create_group("data")
+            data_group.attrs["problem_info"] = json.dumps(
+                {"language_instruction": "debug task"}
+            )
+            demo = data_group.create_group("demo_0")
+            actions = np.zeros((10, 7), dtype=np.float32)
+            actions[:5, 6] = -1.0  # LIBERO raw open
+            actions[5:, 6] = 1.0   # LIBERO raw close
+            demo.create_dataset("actions", data=actions)
+            obs_group = demo.create_group("obs")
+            obs_group.create_dataset(
+                "agentview_rgb",
+                data=np.zeros((10, 8, 8, 3), dtype=np.uint8),
+            )
+
+        dataset = LiberoGoalDataset(
+            data_root=tmpdir,
+            image_processor=DummyImageProcessor(),
+            tokenizer=None,
+            action_chunk_size=10,
+            remove_pause_intervals=False,
+            max_task_files=1,
+        )
+
+        labels = dataset[0]["action_labels"].numpy()
+        assert np.all(labels[:5, 6] == 1.0)
+        assert np.all(labels[5:, 6] == -1.0)
+
+
 if __name__ == "__main__":
     test_gripper_only_actions_are_not_pause()
     test_natural_demo_order_and_inclusive_chunks()
     test_explicit_task_file_selection()
+    test_raw_libero_gripper_is_converted_to_model_space()
     print("✓ LIBERO dataset v2 filters verified")

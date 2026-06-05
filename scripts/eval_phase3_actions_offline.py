@@ -19,6 +19,7 @@ from tqdm import tqdm
 from vila_u.model.builder import load_pretrained_model
 from vila_u.train.utils import get_checkpoint_path
 from vila_u.utils.action_tokenizer import discretize_actions, normalize_action_bin_edges
+from vila_u.utils.libero_action import libero_raw_actions_to_model_actions
 
 
 def natural_key(value: str):
@@ -90,7 +91,7 @@ def iter_libero_samples(
                 demo_names = demo_names[:max_demos_per_task]
             for demo_name in demo_names:
                 demo = h5_file["data"][demo_name]
-                actions = demo["actions"][:]
+                actions = libero_raw_actions_to_model_actions(demo["actions"][:])
                 num_frames = len(actions)
                 max_start = max(0, num_frames - action_chunk_size)
                 for timestep in range(0, max_start + 1, stride):
