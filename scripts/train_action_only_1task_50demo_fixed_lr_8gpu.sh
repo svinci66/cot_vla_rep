@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Four-GPU action-only single-task 50-demo run with fixed learning rate.
-# BATCH_SIZE is global; default 32 means 8 per GPU with 4 GPUs and ACC_STEP=1.
+# Eight-GPU action-only single-task 50-demo run with fixed learning rate.
+# BATCH_SIZE is global; default 64 means 8 per GPU with 8 GPUs and ACC_STEP=1.
 
-export OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-only-1task-50demo-4gpu-bs8-fixed-lr-2e-5-30ep"}
+export OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-only-1task-50demo-8gpu-bs8-fixed-lr-2e-5-30ep"}
 
 export SINGLE_GPU_MODE=False
-export NUM_GPUS=${NUM_GPUS:-4}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export NUM_GPUS=${NUM_GPUS:-8}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 
 export USE_VISUAL_COT=False
 export USE_VISUAL_COT_LOSS=False
@@ -24,7 +24,7 @@ export TASK_FILE=${TASK_FILE:-open_the_middle_drawer_of_the_cabinet_demo.hdf5}
 export TASK_FILE_PATTERN=${TASK_FILE_PATTERN:-}
 
 export NUM_EPOCHS=${NUM_EPOCHS:-30}
-export BATCH_SIZE=${BATCH_SIZE:-32}
+export BATCH_SIZE=${BATCH_SIZE:-64}
 export ACC_STEP=${ACC_STEP:-1}
 export LEARNING_RATE=${LEARNING_RATE:-2e-5}
 export LR_SCHEDULER_TYPE=${LR_SCHEDULER_TYPE:-constant}
