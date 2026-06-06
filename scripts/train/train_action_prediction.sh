@@ -21,6 +21,7 @@ ACC_STEP=${ACC_STEP:-1}
 NUM_EPOCHS=${NUM_EPOCHS:-1}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 WARMUP_RATIO=${WARMUP_RATIO:-0.03}
+LR_SCHEDULER_TYPE=${LR_SCHEDULER_TYPE:-cosine}
 SAVE_STEPS=${SAVE_STEPS:-500}
 SAVE_STRATEGY=${SAVE_STRATEGY:-no}
 LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS=${LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS:-10}
@@ -213,6 +214,7 @@ echo "  Single GPU Mode: $SINGLE_GPU_MODE"
 echo "  GPUs per Node: $NUM_GPUS"
 echo "  Epochs: $NUM_EPOCHS"
 echo "  Learning Rate: $LEARNING_RATE"
+echo "  LR Scheduler: $LR_SCHEDULER_TYPE"
 echo "  Batch Size: $bs per device"
 echo "  Gradient Accumulation: $acc_step"
 echo "  Dataloader Workers: $DATALOADER_NUM_WORKERS"
@@ -283,7 +285,7 @@ train_args=(
     --learning_rate "$LEARNING_RATE"
     --weight_decay 0.
     --warmup_ratio "$WARMUP_RATIO"
-    --lr_scheduler_type cosine
+    --lr_scheduler_type "$LR_SCHEDULER_TYPE"
     --logging_steps 10
     --tf32 True
     --model_max_length 2048
