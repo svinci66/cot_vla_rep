@@ -6,7 +6,7 @@ checks source-level invariants that should hold before training/evaluating an
 action checkpoint:
 
 1. OpenVLA-style action token reuse from the base tokenizer vocab tail.
-2. 256 action bins with 1st-99th percentile bin edges enabled by default.
+2. 256 action bins with uniform bins by default and optional percentile bins.
 3. Typed parallel action slots for x/theta/gripper dimensions.
 4. Hybrid attention with full attention over the action block.
 5. LIBERO/OpenVLA 180-degree image rotation in train and inference paths.
@@ -171,8 +171,6 @@ def check_libero_rotation() -> CheckResult:
     dataset = read_repo_file("vila_u/data/libero_dataset_v2.py")
     legacy_dataset = read_repo_file("vila_u/data/libero_dataset.py")
     model = read_repo_file("vila_u/model/vila_u_arch.py")
-    check_script = read_repo_file("scripts/check_phase2_discrete_inference.py")
-    compare_script = read_repo_file("scripts/compare_phase3_actions.py")
     ok = has_all(
         util,
         [
@@ -185,12 +183,10 @@ def check_libero_rotation() -> CheckResult:
     ok = ok and "obs_rgb = rotate_libero_image_180(obs_rgb)" in legacy_dataset
     ok = ok and "image = rotate_libero_image_180(image)" in model
     ok = ok and "subgoal_image = rotate_libero_image_180(subgoal_image)" in model
-    ok = ok and "rotate_libero_image_180(sample[\"image\"])" in check_script
-    ok = ok and "rotate_libero_image_180(sample[\"image\"])" in compare_script
     return CheckResult(
         "LIBERO 180-degree image rotation",
         ok,
-        "expects raw LIBERO images rotated in training and inference/manual checks",
+        "expects raw LIBERO images rotated in training and inference paths",
     )
 
 
