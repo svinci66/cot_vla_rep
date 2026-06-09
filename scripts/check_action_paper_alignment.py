@@ -11,6 +11,7 @@ action checkpoint:
 4. Hybrid attention with full attention over the action block.
 5. LIBERO/OpenVLA 180-degree image rotation in train and inference paths.
 6. No-op filtering that preserves gripper-only actions.
+7. Optional gripper close/transition CE reweighting for action-only ablations.
 
 Optionally pass ``--checkpoint-config path/to/config.json`` to verify that a
 trained checkpoint persisted the expected action config.
@@ -210,6 +211,47 @@ def check_noop_filtering() -> CheckResult:
     )
 
 
+def check_gripper_reweighting() -> CheckResult:
+    train = read_repo_file("vila_u/train/train_action_prediction_main.py")
+    script = read_repo_file("scripts/train/train_action_prediction.sh")
+    wrapper = read_repo_file("scripts/train_action_only_full_8gpu_fixed_lr.sh")
+    ok = has_all(
+        train,
+        [
+            "gripper_close_loss_weight: float = field(",
+            "gripper_transition_loss_weight: float = field(",
+            "reduction=\"none\"",
+            "close_mask = gripper_values < 0",
+            "transition_mask[:, 0]",
+            "torch.abs(gripper_values[:, 1:] - gripper_values[:, :-1]) > 1e-6",
+            "token_weights.sum().clamp_min(1.0)",
+            "config.gripper_close_loss_weight = action_args.gripper_close_loss_weight",
+            "config.gripper_transition_loss_weight = action_args.gripper_transition_loss_weight",
+        ],
+    )
+    ok = ok and has_all(
+        script,
+        [
+            "GRIPPER_CLOSE_LOSS_WEIGHT=${GRIPPER_CLOSE_LOSS_WEIGHT:-1.0}",
+            "GRIPPER_TRANSITION_LOSS_WEIGHT=${GRIPPER_TRANSITION_LOSS_WEIGHT:-1.0}",
+            "--gripper_close_loss_weight \"$GRIPPER_CLOSE_LOSS_WEIGHT\"",
+            "--gripper_transition_loss_weight \"$GRIPPER_TRANSITION_LOSS_WEIGHT\"",
+        ],
+    )
+    ok = ok and has_all(
+        wrapper,
+        [
+            "GRIPPER_CLOSE_LOSS_WEIGHT=${GRIPPER_CLOSE_LOSS_WEIGHT:-2.0}",
+            "GRIPPER_TRANSITION_LOSS_WEIGHT=${GRIPPER_TRANSITION_LOSS_WEIGHT:-4.0}",
+        ],
+    )
+    return CheckResult(
+        "gripper close/transition reweighting",
+        ok,
+        "expects optional CE weights, with fixed-LR wrapper defaulting to 2.0/4.0",
+    )
+
+
 def check_visual_vocab_not_extended_for_action_slots() -> CheckResult:
     train = read_repo_file("vila_u/train/train_action_prediction_main.py")
     slot_fn = train[train.find("def select_action_slot_token_ids(") : train.find("def select_action_slot_token_id(")]
@@ -308,6 +350,7 @@ def main() -> int:
         check_hybrid_attention,
         check_libero_rotation,
         check_noop_filtering,
+        check_gripper_reweighting,
     ]
 
     print("=" * 80)

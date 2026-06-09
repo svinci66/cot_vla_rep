@@ -144,6 +144,14 @@ class ActionPredictionArguments:
         default=1.0,
         metadata={"help": "Weight for discrete action token loss"}
     )
+    gripper_close_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Additional CE weight for gripper close action tokens in model action space"}
+    )
+    gripper_transition_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Additional CE weight for gripper action tokens at open/close transitions"}
+    )
     use_action_percentile_bins: bool = field(
         default=False,
         metadata={"help": "Use per-dimension action bin edges from training-set percentiles"}
@@ -291,7 +299,12 @@ class DiscreteActionPredictionDataCollator:
             "attention_mask": attention_mask,
             "images": images,
             "labels": labels,
+            "action_labels": actions,
         }
+        if "previous_action_label" in batch[0]:
+            output["previous_action_label"] = torch.stack(
+                [item["previous_action_label"] for item in batch]
+            )
         if "subgoal_images" in batch[0]:
             output["subgoal_images"] = torch.stack([item["subgoal_images"] for item in batch])
             output["subgoal_timesteps"] = torch.tensor(
@@ -452,7 +465,80 @@ class ActionPredictionTrainer(VILAUTrainer):
                 action_loss = torch.nn.functional.cross_entropy(
                     action_logits.reshape(-1, action_logits.size(-1)),
                     action_label_bins.reshape(-1),
+                    reduction="none",
                 )
+                action_loss = action_loss.view(batch_size, action_token_count)
+                gripper_close_loss_weight = float(
+                    getattr(core_model.config, "gripper_close_loss_weight", 1.0)
+                )
+                gripper_transition_loss_weight = float(
+                    getattr(core_model.config, "gripper_transition_loss_weight", 1.0)
+                )
+                if (
+                    inputs.get("action_labels") is not None
+                    and int(core_model.config.action_dim) > 6
+                    and (
+                        gripper_close_loss_weight != 1.0
+                        or gripper_transition_loss_weight != 1.0
+                    )
+                ):
+                    continuous_actions = inputs["action_labels"].to(
+                        device=action_loss.device,
+                        dtype=torch.float32,
+                    )
+                    action_dim = int(core_model.config.action_dim)
+                    action_chunk_size = int(core_model.config.action_chunk_size)
+                    continuous_actions = continuous_actions[:, :action_chunk_size, :action_dim]
+                    token_weights = torch.ones_like(action_loss)
+                    per_token_gripper_mask = torch.zeros(
+                        (action_chunk_size, action_dim),
+                        device=action_loss.device,
+                        dtype=torch.bool,
+                    )
+                    per_token_gripper_mask[:, 6] = True
+                    gripper_mask = per_token_gripper_mask.reshape(-1).unsqueeze(0)
+                    gripper_values = continuous_actions[..., 6]
+                    close_mask = gripper_values < 0
+                    transition_mask = torch.zeros_like(close_mask)
+                    if inputs.get("previous_action_label") is not None:
+                        previous_gripper_values = inputs["previous_action_label"].to(
+                            device=action_loss.device,
+                            dtype=torch.float32,
+                        )[..., 6]
+                        transition_mask[:, 0] = (
+                            torch.abs(gripper_values[:, 0] - previous_gripper_values) > 1e-6
+                        )
+                    if action_chunk_size > 1:
+                        transition_mask[:, 1:] = (
+                            torch.abs(gripper_values[:, 1:] - gripper_values[:, :-1]) > 1e-6
+                        )
+                    per_step_weights = torch.ones_like(gripper_values)
+                    if gripper_close_loss_weight != 1.0:
+                        per_step_weights = torch.where(
+                            close_mask,
+                            per_step_weights * gripper_close_loss_weight,
+                            per_step_weights,
+                        )
+                    if gripper_transition_loss_weight != 1.0:
+                        per_step_weights = torch.where(
+                            transition_mask,
+                            per_step_weights * gripper_transition_loss_weight,
+                            per_step_weights,
+                        )
+                    gripper_weights = torch.ones(
+                        (batch_size, action_chunk_size, action_dim),
+                        device=action_loss.device,
+                        dtype=action_loss.dtype,
+                    )
+                    gripper_weights[..., 6] = per_step_weights.to(action_loss.dtype)
+                    token_weights = torch.where(
+                        gripper_mask,
+                        gripper_weights.reshape(batch_size, action_token_count),
+                        token_weights,
+                    )
+                    action_loss = (action_loss * token_weights).sum() / token_weights.sum().clamp_min(1.0)
+                else:
+                    action_loss = action_loss.mean()
                 loss = action_loss * float(getattr(core_model.config, "action_loss_weight", 1.0))
                 visual_loss = None
                 if (
@@ -1051,6 +1137,8 @@ def train():
     config.use_visual_cot_loss = action_args.use_visual_cot_loss
     config.visual_loss_weight = action_args.visual_loss_weight
     config.action_loss_weight = action_args.action_loss_weight
+    config.gripper_close_loss_weight = action_args.gripper_close_loss_weight
+    config.gripper_transition_loss_weight = action_args.gripper_transition_loss_weight
     config.action_dim = action_args.action_dim
     config.action_chunk_size = action_args.action_chunk_size
     config.action_num_bins = ACTION_NUM_BINS

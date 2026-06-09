@@ -301,19 +301,27 @@ class LiberoGoalDataset(Dataset):
                     filtered_t : filtered_t + self.action_chunk_size
                 ]
                 actions = demo['actions'][action_indices]  # [chunk, 7]
+                if filtered_t > 0:
+                    previous_action = demo['actions'][non_pause_indices[filtered_t - 1]]
+                else:
+                    previous_action = actions[0]
             else:
                 # Get actions directly
                 actions = demo['actions'][t : t + self.action_chunk_size]  # [chunk, 7]
+                previous_action = demo['actions'][t - 1] if t > 0 else actions[0]
 
             # Convert LIBERO raw gripper convention (-1=open, +1=close) to
             # OpenVLA-style model action convention (+1=open, -1=close).
             actions = libero_raw_actions_to_model_actions(actions)
+            previous_action = libero_raw_actions_to_model_actions(previous_action)
             action_tensor = torch.from_numpy(actions).float()
+            previous_action_tensor = torch.from_numpy(previous_action).float()
 
         item = {
             'observations': obs_tensor,  # [3, 256, 256]
             'instructions': sample['instruction'],  # str
             'action_labels': action_tensor,  # [chunk_size, 7]
+            'previous_action_label': previous_action_tensor,  # [7]
         }
         if self.include_subgoal_image:
             item['subgoal_images'] = subgoal_tensor
