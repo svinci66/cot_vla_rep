@@ -514,15 +514,23 @@ class ActionPredictionTrainer(VILAUTrainer):
                         )
                     per_step_weights = torch.ones_like(gripper_values)
                     if gripper_close_loss_weight != 1.0:
+                        close_weights = torch.full_like(
+                            per_step_weights,
+                            gripper_close_loss_weight,
+                        )
                         per_step_weights = torch.where(
                             close_mask,
-                            per_step_weights * gripper_close_loss_weight,
+                            torch.maximum(per_step_weights, close_weights),
                             per_step_weights,
                         )
                     if gripper_transition_loss_weight != 1.0:
+                        transition_weights = torch.full_like(
+                            per_step_weights,
+                            gripper_transition_loss_weight,
+                        )
                         per_step_weights = torch.where(
                             transition_mask,
-                            per_step_weights * gripper_transition_loss_weight,
+                            torch.maximum(per_step_weights, transition_weights),
                             per_step_weights,
                         )
                     gripper_weights = torch.ones(

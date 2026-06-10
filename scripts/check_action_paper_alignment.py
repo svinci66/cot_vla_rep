@@ -224,6 +224,8 @@ def check_gripper_reweighting() -> CheckResult:
             "close_mask = gripper_values < 0",
             "transition_mask[:, 0]",
             "torch.abs(gripper_values[:, 1:] - gripper_values[:, :-1]) > 1e-6",
+            "torch.maximum(per_step_weights, close_weights)",
+            "torch.maximum(per_step_weights, transition_weights)",
             "token_weights.sum().clamp_min(1.0)",
             "config.gripper_close_loss_weight = action_args.gripper_close_loss_weight",
             "config.gripper_transition_loss_weight = action_args.gripper_transition_loss_weight",
@@ -248,7 +250,7 @@ def check_gripper_reweighting() -> CheckResult:
     return CheckResult(
         "gripper close/transition reweighting",
         ok,
-        "expects optional CE weights, with fixed-LR wrapper defaulting to 2.0/4.0",
+        "expects optional max/override CE weights, with fixed-LR wrapper defaulting to 2.0/4.0",
     )
 
 
