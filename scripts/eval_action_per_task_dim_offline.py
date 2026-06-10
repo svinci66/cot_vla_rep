@@ -31,6 +31,13 @@ def load_summary(path: Path) -> dict[str, Any]:
     return payload
 
 
+def mean_present(per_task: list[dict[str, Any]], key: str) -> float | None:
+    values = [float(item[key]) for item in per_task if item.get(key) is not None]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run strict offline action eval per LIBERO task file.")
     parser.add_argument("--model-path", required=True)
@@ -42,6 +49,7 @@ def main() -> None:
     parser.add_argument("--max-samples-per-task", type=int, default=1000000)
     parser.add_argument("--max-demos-per-task", type=int, default=5)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--task-file-pattern", default=None)
     parser.add_argument("--remove-pause-intervals", default="True")
     parser.add_argument("--pause-threshold", type=float, default=0.01)
@@ -85,6 +93,8 @@ def main() -> None:
             str(args.max_samples_per_task),
             "--num-workers",
             str(args.num_workers),
+            "--image-size",
+            str(args.image_size),
             "--remove-pause-intervals",
             args.remove_pause_intervals,
             "--pause-threshold",
@@ -116,10 +126,13 @@ def main() -> None:
         "max_samples_per_task": args.max_samples_per_task,
         "mean_mae": sum(item["mae"] for item in per_task) / len(per_task),
         "mean_token_accuracy": sum(item["token_accuracy"] for item in per_task) / len(per_task),
-        "mean_gripper_sign_accuracy": sum(
-            item["gripper_sign_accuracy"] for item in per_task if item.get("gripper_sign_accuracy") is not None
-        )
-        / max(sum(1 for item in per_task if item.get("gripper_sign_accuracy") is not None), 1),
+        "mean_gripper_sign_accuracy": mean_present(per_task, "gripper_sign_accuracy"),
+        "mean_gripper_close_recall": mean_present(per_task, "gripper_close_recall"),
+        "mean_gripper_transition_change_recall": mean_present(
+            per_task,
+            "gripper_transition_change_recall",
+        ),
+        "mean_gripper_pred_open_rate": mean_present(per_task, "gripper_pred_open_rate"),
         "per_task": per_task,
     }
     output_path.write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
@@ -128,6 +141,8 @@ def main() -> None:
     print(f"mean_mae = {aggregate['mean_mae']}")
     print(f"mean_token_accuracy = {aggregate['mean_token_accuracy']}")
     print(f"mean_gripper_sign_accuracy = {aggregate['mean_gripper_sign_accuracy']}")
+    print(f"mean_gripper_close_recall = {aggregate['mean_gripper_close_recall']}")
+    print(f"mean_gripper_transition_change_recall = {aggregate['mean_gripper_transition_change_recall']}")
 
 
 if __name__ == "__main__":

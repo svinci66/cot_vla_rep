@@ -348,6 +348,9 @@ def main():
     gripper_mses = []
     gripper_sign_matches = []
     gripper_token_accuracies = []
+    gripper_close_recalls = []
+    gripper_transition_change_recalls = []
+    gripper_pred_open_rates = []
     pred_mins = []
     pred_maxes = []
     finite_flags = []
@@ -384,10 +387,12 @@ def main():
         finite_flags.extend(torch.isfinite(pred_actions).flatten(1).all(dim=1).detach().cpu().tolist())
 
         if action_dim > 6:
+            pred_gripper = pred_actions[:, :, 6]
+            gt_gripper = gt_actions[:, :, 6]
             gripper_maes.extend(abs_error[:, :, 6].mean(dim=1).detach().cpu().tolist())
             gripper_mses.extend(sq_error[:, :, 6].mean(dim=1).detach().cpu().tolist())
             gripper_sign_matches.extend(
-                torch.sign(pred_actions[:, :, 6]).eq(torch.sign(gt_actions[:, :, 6]))
+                torch.sign(pred_gripper).eq(torch.sign(gt_gripper))
                 .float()
                 .mean(dim=1)
                 .detach()
@@ -397,6 +402,33 @@ def main():
             gripper_token_accuracies.extend(
                 token_matches[:, :, 6].float().mean(dim=1).detach().cpu().tolist()
             )
+            pred_close = pred_gripper < 0
+            gt_close = gt_gripper < 0
+            close_counts = gt_close.float().sum(dim=1)
+            close_hits = (pred_close & gt_close).float().sum(dim=1)
+            close_recall = torch.where(
+                close_counts > 0,
+                close_hits / close_counts.clamp_min(1.0),
+                torch.full_like(close_counts, float("nan")),
+            )
+            gripper_close_recalls.extend(
+                close_recall[torch.isfinite(close_recall)].detach().cpu().tolist()
+            )
+            pred_open = pred_gripper > 0
+            gripper_pred_open_rates.extend(pred_open.float().mean(dim=1).detach().cpu().tolist())
+            if pred_gripper.shape[1] > 1:
+                pred_transition = torch.sign(pred_gripper[:, 1:]).ne(torch.sign(pred_gripper[:, :-1]))
+                gt_transition = torch.sign(gt_gripper[:, 1:]).ne(torch.sign(gt_gripper[:, :-1]))
+                transition_counts = gt_transition.float().sum(dim=1)
+                transition_hits = (pred_transition & gt_transition).float().sum(dim=1)
+                transition_recall = torch.where(
+                    transition_counts > 0,
+                    transition_hits / transition_counts.clamp_min(1.0),
+                    torch.full_like(transition_counts, float("nan")),
+                )
+                gripper_transition_change_recalls.extend(
+                    transition_recall[torch.isfinite(transition_recall)].detach().cpu().tolist()
+                )
 
         if args.save_records:
             sample_start = processed
@@ -438,6 +470,9 @@ def main():
         "gripper_mse": summarize_float(gripper_mses),
         "gripper_sign_accuracy": summarize_float(gripper_sign_matches),
         "gripper_token_accuracy": summarize_float(gripper_token_accuracies),
+        "gripper_close_recall": summarize_float(gripper_close_recalls),
+        "gripper_transition_change_recall": summarize_float(gripper_transition_change_recalls),
+        "gripper_pred_open_rate": summarize_float(gripper_pred_open_rates),
         "pred_min": float(np.min(pred_mins)),
         "pred_max": float(np.max(pred_maxes)),
         "finite_rate": summarize_float([float(flag) for flag in finite_flags]),
