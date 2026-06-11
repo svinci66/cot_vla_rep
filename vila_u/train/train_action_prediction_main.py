@@ -144,6 +144,10 @@ class ActionPredictionArguments:
         default=1.0,
         metadata={"help": "Weight for discrete action token loss"}
     )
+    xyz_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Additional CE weight for XYZ translation action tokens"}
+    )
     gripper_close_loss_weight: float = field(
         default=1.0,
         metadata={"help": "Additional CE weight for gripper close action tokens in model action space"}
@@ -468,15 +472,29 @@ class ActionPredictionTrainer(VILAUTrainer):
                     reduction="none",
                 )
                 action_loss = action_loss.view(batch_size, action_token_count)
+                xyz_loss_weight = float(getattr(core_model.config, "xyz_loss_weight", 1.0))
                 gripper_close_loss_weight = float(
                     getattr(core_model.config, "gripper_close_loss_weight", 1.0)
                 )
                 gripper_transition_loss_weight = float(
                     getattr(core_model.config, "gripper_transition_loss_weight", 1.0)
                 )
+                action_dim = int(core_model.config.action_dim)
+                action_chunk_size = int(core_model.config.action_chunk_size)
+                token_weights = torch.ones_like(action_loss)
+                if xyz_loss_weight != 1.0:
+                    per_token_xyz_mask = torch.zeros(
+                        (action_chunk_size, action_dim),
+                        device=action_loss.device,
+                        dtype=torch.bool,
+                    )
+                    per_token_xyz_mask[:, : min(3, action_dim)] = True
+                    xyz_mask = per_token_xyz_mask.reshape(-1).unsqueeze(0)
+                    xyz_weights = torch.full_like(token_weights, xyz_loss_weight)
+                    token_weights = torch.where(xyz_mask, xyz_weights, token_weights)
                 if (
                     inputs.get("action_labels") is not None
-                    and int(core_model.config.action_dim) > 6
+                    and action_dim > 6
                     and (
                         gripper_close_loss_weight != 1.0
                         or gripper_transition_loss_weight != 1.0
@@ -486,10 +504,7 @@ class ActionPredictionTrainer(VILAUTrainer):
                         device=action_loss.device,
                         dtype=torch.float32,
                     )
-                    action_dim = int(core_model.config.action_dim)
-                    action_chunk_size = int(core_model.config.action_chunk_size)
                     continuous_actions = continuous_actions[:, :action_chunk_size, :action_dim]
-                    token_weights = torch.ones_like(action_loss)
                     per_token_gripper_mask = torch.zeros(
                         (action_chunk_size, action_dim),
                         device=action_loss.device,
@@ -546,7 +561,7 @@ class ActionPredictionTrainer(VILAUTrainer):
                     )
                     action_loss = (action_loss * token_weights).sum() / token_weights.sum().clamp_min(1.0)
                 else:
-                    action_loss = action_loss.mean()
+                    action_loss = (action_loss * token_weights).sum() / token_weights.sum().clamp_min(1.0)
                 loss = action_loss * float(getattr(core_model.config, "action_loss_weight", 1.0))
                 visual_loss = None
                 if (
@@ -1145,6 +1160,7 @@ def train():
     config.use_visual_cot_loss = action_args.use_visual_cot_loss
     config.visual_loss_weight = action_args.visual_loss_weight
     config.action_loss_weight = action_args.action_loss_weight
+    config.xyz_loss_weight = action_args.xyz_loss_weight
     config.gripper_close_loss_weight = action_args.gripper_close_loss_weight
     config.gripper_transition_loss_weight = action_args.gripper_transition_loss_weight
     config.action_dim = action_args.action_dim

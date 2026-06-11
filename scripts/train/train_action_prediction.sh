@@ -59,6 +59,7 @@ TUNE_MM_PROJECTOR=${TUNE_MM_PROJECTOR:-True}
 TUNE_VISION_TOWER=${TUNE_VISION_TOWER:-False}
 VISUAL_LOSS_WEIGHT=${VISUAL_LOSS_WEIGHT:-1.0}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-1.0}
+XYZ_LOSS_WEIGHT=${XYZ_LOSS_WEIGHT:-1.0}
 GRIPPER_CLOSE_LOSS_WEIGHT=${GRIPPER_CLOSE_LOSS_WEIGHT:-1.0}
 GRIPPER_TRANSITION_LOSS_WEIGHT=${GRIPPER_TRANSITION_LOSS_WEIGHT:-1.0}
 SUBGOAL_MIN_OFFSET=${SUBGOAL_MIN_OFFSET:-1}
@@ -243,6 +244,7 @@ echo "  Tune MM Projector: $TUNE_MM_PROJECTOR"
 echo "  Tune Vision Tower: $TUNE_VISION_TOWER"
 echo "  Visual Loss Weight: $VISUAL_LOSS_WEIGHT"
 echo "  Action Loss Weight: $ACTION_LOSS_WEIGHT"
+echo "  XYZ Loss Weight: $XYZ_LOSS_WEIGHT"
 echo "  Gripper Close Loss Weight: $GRIPPER_CLOSE_LOSS_WEIGHT"
 echo "  Gripper Transition Loss Weight: $GRIPPER_TRANSITION_LOSS_WEIGHT"
 echo "  Subgoal Offset Range: $SUBGOAL_MIN_OFFSET-$SUBGOAL_MAX_OFFSET"
@@ -303,6 +305,7 @@ train_args=(
     --tune_depth_transformer "$TUNE_DEPTH_TRANSFORMER"
     --visual_loss_weight "$VISUAL_LOSS_WEIGHT"
     --action_loss_weight "$ACTION_LOSS_WEIGHT"
+    --xyz_loss_weight "$XYZ_LOSS_WEIGHT"
     --gripper_close_loss_weight "$GRIPPER_CLOSE_LOSS_WEIGHT"
     --gripper_transition_loss_weight "$GRIPPER_TRANSITION_LOSS_WEIGHT"
     --subgoal_min_offset "$SUBGOAL_MIN_OFFSET"

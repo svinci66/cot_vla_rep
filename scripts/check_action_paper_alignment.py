@@ -211,22 +211,26 @@ def check_noop_filtering() -> CheckResult:
     )
 
 
-def check_gripper_reweighting() -> CheckResult:
+def check_action_token_reweighting() -> CheckResult:
     train = read_repo_file("vila_u/train/train_action_prediction_main.py")
     script = read_repo_file("scripts/train/train_action_prediction.sh")
     wrapper = read_repo_file("scripts/train_action_only_full_8gpu_fixed_lr.sh")
     ok = has_all(
         train,
         [
+            "xyz_loss_weight: float = field(",
             "gripper_close_loss_weight: float = field(",
             "gripper_transition_loss_weight: float = field(",
             "reduction=\"none\"",
+            "per_token_xyz_mask[:, : min(3, action_dim)] = True",
+            "token_weights = torch.where(xyz_mask, xyz_weights, token_weights)",
             "close_mask = gripper_values < 0",
             "transition_mask[:, 0]",
             "torch.abs(gripper_values[:, 1:] - gripper_values[:, :-1]) > 1e-6",
             "torch.maximum(per_step_weights, close_weights)",
             "torch.maximum(per_step_weights, transition_weights)",
             "token_weights.sum().clamp_min(1.0)",
+            "config.xyz_loss_weight = action_args.xyz_loss_weight",
             "config.gripper_close_loss_weight = action_args.gripper_close_loss_weight",
             "config.gripper_transition_loss_weight = action_args.gripper_transition_loss_weight",
         ],
@@ -234,8 +238,10 @@ def check_gripper_reweighting() -> CheckResult:
     ok = ok and has_all(
         script,
         [
+            "XYZ_LOSS_WEIGHT=${XYZ_LOSS_WEIGHT:-1.0}",
             "GRIPPER_CLOSE_LOSS_WEIGHT=${GRIPPER_CLOSE_LOSS_WEIGHT:-1.0}",
             "GRIPPER_TRANSITION_LOSS_WEIGHT=${GRIPPER_TRANSITION_LOSS_WEIGHT:-1.0}",
+            "--xyz_loss_weight \"$XYZ_LOSS_WEIGHT\"",
             "--gripper_close_loss_weight \"$GRIPPER_CLOSE_LOSS_WEIGHT\"",
             "--gripper_transition_loss_weight \"$GRIPPER_TRANSITION_LOSS_WEIGHT\"",
         ],
@@ -248,9 +254,9 @@ def check_gripper_reweighting() -> CheckResult:
         ],
     )
     return CheckResult(
-        "gripper close/transition reweighting",
+        "action token loss reweighting",
         ok,
-        "expects optional max/override CE weights, with fixed-LR wrapper defaulting to 2.0/4.0",
+        "expects optional xyz and gripper max/override CE weights",
     )
 
 
@@ -352,7 +358,7 @@ def main() -> int:
         check_hybrid_attention,
         check_libero_rotation,
         check_noop_filtering,
-        check_gripper_reweighting,
+        check_action_token_reweighting,
     ]
 
     print("=" * 80)
