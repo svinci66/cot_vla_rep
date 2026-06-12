@@ -59,6 +59,19 @@ class TrainingArguments(transformers.TrainingArguments):
         },
     )
     chunk_sampler: bool = field(default=False)
+    rank_slice_after_shuffle: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "Shuffle each dataset segment globally before rank-stride slicing. "
+                "This avoids each DDP rank seeing only a contiguous demo range."
+            )
+        },
+    )
+    sampler_debug: bool = field(
+        default=False,
+        metadata={"help": "Print per-rank sampler coverage diagnostics at training startup."},
+    )
     model_dtype: str = field(default="torch.bfloat16")
     model_max_length: int = field(
         default=512,

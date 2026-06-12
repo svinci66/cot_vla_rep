@@ -1,5 +1,6 @@
 import torch
 import torch.distributed as dist
+from collections import Counter
 
 from torch import nn
 from torch.utils.data import ConcatDataset, Dataset, DistributedSampler, Sampler
@@ -88,6 +89,7 @@ class VILADistributedSampler(DistributedSampler):
         sample_len_list=None,
         force_accumulation=True,
         chunk_sampler=False,
+        rank_slice_after_shuffle=True,
     ) -> None:
         if num_replicas is None:
             if not dist.is_available():
@@ -133,41 +135,50 @@ class VILADistributedSampler(DistributedSampler):
 
         self.force_accumulation = force_accumulation
         self.chunk_sampler = chunk_sampler
+        self.rank_slice_after_shuffle = rank_slice_after_shuffle
+        self.sampler_debug = False
+        self._debug_printed_epochs = set()
 
     def __iter__(self):
         import random
 
         indices = list(range(len(self.dataset)))
+        rng = random.Random(self.seed + self.epoch)
 
         indices_list = []
         for i in range(len(self.org_sample_len_list)):
-            indices_list.append(
-                indices[sum(self.org_sample_len_list[:i]) : sum(self.org_sample_len_list[:i]) + self.total_samples[i]]
-            )
+            segment = indices[
+                sum(self.org_sample_len_list[:i]) : sum(self.org_sample_len_list[:i]) + self.total_samples[i]
+            ]
+            if self.rank_slice_after_shuffle:
+                segment = list(segment)
+                rng.shuffle(segment)
+                indices_list.append(segment[self.rank : self.total_samples[i] : self.num_replicas])
+            else:
+                indices_list.append(
+                    segment[
+                        self.rank * self.per_replica_samples[i] : (self.rank + 1) * self.per_replica_samples[i]
+                    ]
+                )
 
-        assert sum([len(indices) for indices in indices_list]) == self.total_size, (
+        assert sum([len(indices) for indices in indices_list]) == self.num_samples, (
             sum([len(indices) for indices in indices_list]),
-            self.total_size,
+            self.num_samples,
         )
 
-        for idx, indices in enumerate(indices_list):
-            indices_list[idx] = indices[
-                self.rank * self.per_replica_samples[idx] : (self.rank + 1) * self.per_replica_samples[idx]
-            ]
-
-        random.seed(self.seed + self.epoch)
         for indice in range(len(indices_list)):
             if self.chunk_sampler:
                 list_split = [indices_list[indice][i:i+1000] for i in range(0, len(indices_list[indice]), 1000)]
                 for i in range(len(list_split)):
-                    random.shuffle(list_split[i])
-                random.shuffle(list_split)
+                    rng.shuffle(list_split[i])
+                rng.shuffle(list_split)
                 list_merge = []
                 for li in list_split:
                     list_merge += li
                 indices_list[indice] = list_merge
             else:
-                random.shuffle(indices_list[indice])
+                if not self.rank_slice_after_shuffle:
+                    rng.shuffle(indices_list[indice])
 
         indices_list = sorted(indices_list, key=lambda x: -len(x))
         all_indices = [-1] * self.num_samples
@@ -182,6 +193,22 @@ class VILADistributedSampler(DistributedSampler):
             for i, idx in enumerate(mapped_indices):
                 all_indices[idx] = indice[i]
         assert -1 not in all_indices
+
+        if self.sampler_debug and self.epoch not in self._debug_printed_epochs:
+            self._debug_printed_epochs.add(self.epoch)
+            samples = getattr(self.dataset, "samples", None)
+            if samples is not None:
+                demo_counts = Counter(str(samples[index].get("demo", "")) for index in all_indices)
+                non_empty_demos = sorted(demo for demo in demo_counts if demo)
+                print(
+                    "[sampler_debug] "
+                    f"rank={self.rank} epoch={self.epoch} num_samples={len(all_indices)} "
+                    f"num_demos_seen={len(non_empty_demos)} "
+                    f"min_demo={non_empty_demos[0] if non_empty_demos else None} "
+                    f"max_demo={non_empty_demos[-1] if non_empty_demos else None} "
+                    f"top_demos={demo_counts.most_common(5)}",
+                    flush=True,
+                )
 
         return iter(all_indices)
 
@@ -232,7 +259,7 @@ class VILAUTrainer(Trainer):
         sample_len_list = self.args.sample_lens
         seed = self.args.data_seed if self.args.data_seed is not None else self.args.seed
 
-        return VILADistributedSampler(
+        sampler = VILADistributedSampler(
             self.train_dataset,
             num_replicas=self.args.world_size,
             rank=self.args.process_index,
@@ -240,7 +267,10 @@ class VILAUTrainer(Trainer):
             batch_size=self.args.train_batch_size,
             sample_len_list=sample_len_list,
             chunk_sampler=self.args.chunk_sampler,
+            rank_slice_after_shuffle=self.args.rank_slice_after_shuffle,
         )
+        sampler.sampler_debug = self.args.sampler_debug
+        return sampler
 
         if self.args.group_by_modality_length:
             if not isinstance(self.train_dataset, ConcatDataset):
@@ -264,14 +294,17 @@ class VILAUTrainer(Trainer):
 
         sample_len_list = self.args.eval_sample_lens
         seed = self.args.data_seed if self.args.data_seed is not None else self.args.seed
-        return VILADistributedSampler(
+        sampler = VILADistributedSampler(
             eval_dataset,
             num_replicas=self.args.world_size,
             rank=self.args.process_index,
             seed=seed,
             batch_size=self.args.eval_batch_size,
             sample_len_list=sample_len_list,
+            rank_slice_after_shuffle=self.args.rank_slice_after_shuffle,
         )
+        sampler.sampler_debug = self.args.sampler_debug
+        return sampler
 
     def create_optimizer(self):
         """

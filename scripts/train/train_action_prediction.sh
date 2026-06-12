@@ -45,6 +45,8 @@ TASK_FILE=${TASK_FILE:-}
 TASK_FILE_PATTERN=${TASK_FILE_PATTERN:-}
 REPORT_TO=${REPORT_TO:-wandb}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-4}
+RANK_SLICE_AFTER_SHUFFLE=${RANK_SLICE_AFTER_SHUFFLE:-True}
+SAMPLER_DEBUG=${SAMPLER_DEBUG:-False}
 GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 SUPPRESS_FUTURE_WARNING=${SUPPRESS_FUTURE_WARNING:-True}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-eager}
@@ -221,6 +223,8 @@ echo "  LR Scheduler: $LR_SCHEDULER_TYPE"
 echo "  Batch Size: $bs per device"
 echo "  Gradient Accumulation: $acc_step"
 echo "  Dataloader Workers: $DATALOADER_NUM_WORKERS"
+echo "  Rank Slice After Shuffle: $RANK_SLICE_AFTER_SHUFFLE"
+echo "  Sampler Debug: $SAMPLER_DEBUG"
 echo "  Gradient Checkpointing: $GRADIENT_CHECKPOINTING"
 echo "  Effective Batch Size: $effective_bs"
 echo "  Image Size: $IMAGE_SIZE"
@@ -297,6 +301,8 @@ train_args=(
     --model_max_length 2048
     --gradient_checkpointing "$GRADIENT_CHECKPOINTING"
     --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
+    --rank_slice_after_shuffle "$RANK_SLICE_AFTER_SHUFFLE"
+    --sampler_debug "$SAMPLER_DEBUG"
     --lazy_preprocess True
     --report_to "$REPORT_TO"
     --use_hybrid_attention "$USE_HYBRID_ATTENTION"

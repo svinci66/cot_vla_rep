@@ -12,6 +12,7 @@ action checkpoint:
 5. LIBERO/OpenVLA 180-degree image rotation in train and inference paths.
 6. No-op filtering that preserves gripper-only actions.
 7. Optional gripper close/transition CE reweighting for action-only ablations.
+8. DDP sampler shuffles before rank slicing to avoid contiguous demo shards.
 
 Optionally pass ``--checkpoint-config path/to/config.json`` to verify that a
 trained checkpoint persisted the expected action config.
@@ -260,6 +261,42 @@ def check_action_token_reweighting() -> CheckResult:
     )
 
 
+def check_rank_slice_after_shuffle_sampler() -> CheckResult:
+    trainer = read_repo_file("vila_u/train/vila_u_trainer.py")
+    args = read_repo_file("vila_u/train/args.py")
+    script = read_repo_file("scripts/train/train_action_prediction.sh")
+    ok = has_all(
+        trainer,
+        [
+            "rank_slice_after_shuffle=True",
+            "rng.shuffle(segment)",
+            "segment[self.rank : self.total_samples[i] : self.num_replicas]",
+            "sampler.sampler_debug = self.args.sampler_debug",
+        ],
+    )
+    ok = ok and has_all(
+        args,
+        [
+            "rank_slice_after_shuffle: bool = field(",
+            "sampler_debug: bool = field(",
+        ],
+    )
+    ok = ok and has_all(
+        script,
+        [
+            "RANK_SLICE_AFTER_SHUFFLE=${RANK_SLICE_AFTER_SHUFFLE:-True}",
+            "SAMPLER_DEBUG=${SAMPLER_DEBUG:-False}",
+            "--rank_slice_after_shuffle \"$RANK_SLICE_AFTER_SHUFFLE\"",
+            "--sampler_debug \"$SAMPLER_DEBUG\"",
+        ],
+    )
+    return CheckResult(
+        "DDP sampler global shuffle before rank slicing",
+        ok,
+        "expects shuffled segment then rank-stride slicing, not contiguous rank shards",
+    )
+
+
 def check_visual_vocab_not_extended_for_action_slots() -> CheckResult:
     train = read_repo_file("vila_u/train/train_action_prediction_main.py")
     slot_fn = train[train.find("def select_action_slot_token_ids(") : train.find("def select_action_slot_token_id(")]
@@ -359,6 +396,7 @@ def main() -> int:
         check_libero_rotation,
         check_noop_filtering,
         check_action_token_reweighting,
+        check_rank_slice_after_shuffle_sampler,
     ]
 
     print("=" * 80)
