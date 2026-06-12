@@ -86,6 +86,9 @@ class VILAULlamaModel(VILAUMetaModel, VILAUMetaForCausalLM, PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        repack_multimodal: bool = True,
+        return_llm_outputs: bool = False,
+        seqlens_in_batch: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         if inputs_embeds is None:
             (
@@ -104,7 +107,7 @@ class VILAULlamaModel(VILAUMetaModel, VILAUMetaForCausalLM, PreTrainedModel):
                 images,
             )
             
-        if self.training:
+        if self.training and repack_multimodal:
             (
                 _,
                 new_position_ids,
@@ -128,7 +131,12 @@ class VILAULlamaModel(VILAUMetaModel, VILAUMetaForCausalLM, PreTrainedModel):
             new_position_ids = position_ids
             new_inputs_embeds = inputs_embeds
             new_labels = labels
-            sorted_seqlens_in_batch = attention_mask.sum(-1).int()
+            if seqlens_in_batch is not None:
+                sorted_seqlens_in_batch = seqlens_in_batch
+            elif attention_mask is not None and attention_mask.dim() == 2:
+                sorted_seqlens_in_batch = attention_mask.sum(-1).int()
+            else:
+                sorted_seqlens_in_batch = None
             new_input_ids = input_ids
 
         output_attentions = output_attentions if output_attentions is not None else self.llm.config.output_attentions
@@ -149,6 +157,9 @@ class VILAULlamaModel(VILAUMetaModel, VILAUMetaForCausalLM, PreTrainedModel):
             return_dict=return_dict,
             seqlens_in_batch=sorted_seqlens_in_batch,
         )
+
+        if return_llm_outputs:
+            return outputs
 
         hidden_states = outputs[0]
 

@@ -14,6 +14,7 @@ action checkpoint:
 7. Optional gripper close/transition CE reweighting for action-only ablations.
 8. DDP sampler shuffles before rank slicing to avoid contiguous demo shards.
 9. Optional DDP rank parameter checksum catches unsynchronized rank state.
+10. Custom action losses call the outer model forward so DDP can sync ranks.
 
 Optionally pass ``--checkpoint-config path/to/config.json`` to verify that a
 trained checkpoint persisted the expected action config.
@@ -332,6 +333,34 @@ def check_rank_parameter_consistency_callback() -> CheckResult:
     )
 
 
+def check_ddp_safe_custom_action_forward() -> CheckResult:
+    train = read_repo_file("vila_u/train/train_action_prediction_main.py")
+    model = read_repo_file("vila_u/model/language_model/vila_u_llama.py")
+    ok = "core_model.llm.model(" not in train
+    ok = ok and has_all(
+        train,
+        [
+            "outputs = model(",
+            "repack_multimodal=False",
+            "return_llm_outputs=True",
+        ],
+    )
+    ok = ok and has_all(
+        model,
+        [
+            "repack_multimodal: bool = True",
+            "return_llm_outputs: bool = False",
+            "if self.training and repack_multimodal:",
+            "if return_llm_outputs:",
+        ],
+    )
+    return CheckResult(
+        "DDP-safe custom action forward",
+        ok,
+        "expects custom action losses to call outer model(...) instead of bypassing DDP",
+    )
+
+
 def check_visual_vocab_not_extended_for_action_slots() -> CheckResult:
     train = read_repo_file("vila_u/train/train_action_prediction_main.py")
     slot_fn = train[train.find("def select_action_slot_token_ids(") : train.find("def select_action_slot_token_id(")]
@@ -433,6 +462,7 @@ def main() -> int:
         check_action_token_reweighting,
         check_rank_slice_after_shuffle_sampler,
         check_rank_parameter_consistency_callback,
+        check_ddp_safe_custom_action_forward,
     ]
 
     print("=" * 80)

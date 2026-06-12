@@ -430,16 +430,19 @@ class ActionPredictionTrainer(VILAUTrainer):
                     num_action_tokens=action_token_count,
                     dtype=inputs_embeds.dtype,
                 )
-                outputs = core_model.llm.model(
+                outputs = model(
                     input_ids=None,
                     attention_mask=hybrid_attention_mask,
                     position_ids=position_ids,
                     past_key_values=past_key_values,
                     inputs_embeds=inputs_embeds,
+                    labels=None,
                     use_cache=False,
                     output_attentions=False,
                     output_hidden_states=False,
                     return_dict=True,
+                    repack_multimodal=False,
+                    return_llm_outputs=True,
                     seqlens_in_batch=None,
                 )
                 labels = mm_labels[:, :, 0]
@@ -624,16 +627,19 @@ class ActionPredictionTrainer(VILAUTrainer):
             images=images,
         )
 
-        outputs = core_model.llm.model(
+        outputs = model(
             input_ids=None,
             attention_mask=mm_attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
+            labels=None,
             use_cache=False,
             output_attentions=False,
             output_hidden_states=False,
             return_dict=True,
+            repack_multimodal=False,
+            return_llm_outputs=True,
             seqlens_in_batch=mm_attention_mask.sum(dim=-1, dtype=torch.int32),
         )
 
