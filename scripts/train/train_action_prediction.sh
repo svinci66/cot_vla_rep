@@ -47,6 +47,7 @@ REPORT_TO=${REPORT_TO:-wandb}
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-4}
 RANK_SLICE_AFTER_SHUFFLE=${RANK_SLICE_AFTER_SHUFFLE:-True}
 SAMPLER_DEBUG=${SAMPLER_DEBUG:-False}
+RANK_PARAMETER_CHECK=${RANK_PARAMETER_CHECK:-False}
 GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 SUPPRESS_FUTURE_WARNING=${SUPPRESS_FUTURE_WARNING:-True}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-eager}
@@ -225,6 +226,7 @@ echo "  Gradient Accumulation: $acc_step"
 echo "  Dataloader Workers: $DATALOADER_NUM_WORKERS"
 echo "  Rank Slice After Shuffle: $RANK_SLICE_AFTER_SHUFFLE"
 echo "  Sampler Debug: $SAMPLER_DEBUG"
+echo "  Rank Parameter Check: $RANK_PARAMETER_CHECK"
 echo "  Gradient Checkpointing: $GRADIENT_CHECKPOINTING"
 echo "  Effective Batch Size: $effective_bs"
 echo "  Image Size: $IMAGE_SIZE"
@@ -303,6 +305,7 @@ train_args=(
     --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
     --rank_slice_after_shuffle "$RANK_SLICE_AFTER_SHUFFLE"
     --sampler_debug "$SAMPLER_DEBUG"
+    --rank_parameter_check "$RANK_PARAMETER_CHECK"
     --lazy_preprocess True
     --report_to "$REPORT_TO"
     --use_hybrid_attention "$USE_HYBRID_ATTENTION"

@@ -13,6 +13,7 @@ action checkpoint:
 6. No-op filtering that preserves gripper-only actions.
 7. Optional gripper close/transition CE reweighting for action-only ablations.
 8. DDP sampler shuffles before rank slicing to avoid contiguous demo shards.
+9. Optional DDP rank parameter checksum catches unsynchronized rank state.
 
 Optionally pass ``--checkpoint-config path/to/config.json`` to verify that a
 trained checkpoint persisted the expected action config.
@@ -297,6 +298,40 @@ def check_rank_slice_after_shuffle_sampler() -> CheckResult:
     )
 
 
+def check_rank_parameter_consistency_callback() -> CheckResult:
+    train = read_repo_file("vila_u/train/train_action_prediction_main.py")
+    args = read_repo_file("vila_u/train/args.py")
+    script = read_repo_file("scripts/train/train_action_prediction.sh")
+    ok = has_all(
+        train,
+        [
+            "class RankParameterConsistencyCallback(TrainerCallback):",
+            "torch.distributed.all_gather(gathered, checksum)",
+            "DDP trainable parameter checksum mismatch across ranks",
+            "trainer.add_callback(RankParameterConsistencyCallback())",
+        ],
+    )
+    ok = ok and has_all(
+        args,
+        [
+            "rank_parameter_check: bool = field(",
+            "parameters to verify DDP ranks remain synchronized",
+        ],
+    )
+    ok = ok and has_all(
+        script,
+        [
+            "RANK_PARAMETER_CHECK=${RANK_PARAMETER_CHECK:-False}",
+            "--rank_parameter_check \"$RANK_PARAMETER_CHECK\"",
+        ],
+    )
+    return CheckResult(
+        "DDP rank parameter consistency check",
+        ok,
+        "expects optional all-gather checksum to detect unsynchronized trainable parameters",
+    )
+
+
 def check_visual_vocab_not_extended_for_action_slots() -> CheckResult:
     train = read_repo_file("vila_u/train/train_action_prediction_main.py")
     slot_fn = train[train.find("def select_action_slot_token_ids(") : train.find("def select_action_slot_token_id(")]
@@ -397,6 +432,7 @@ def main() -> int:
         check_noop_filtering,
         check_action_token_reweighting,
         check_rank_slice_after_shuffle_sampler,
+        check_rank_parameter_consistency_callback,
     ]
 
     print("=" * 80)

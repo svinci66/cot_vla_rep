@@ -72,6 +72,15 @@ class TrainingArguments(transformers.TrainingArguments):
         default=False,
         metadata={"help": "Print per-rank sampler coverage diagnostics at training startup."},
     )
+    rank_parameter_check: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "At epoch end, all-gather a lightweight checksum of trainable "
+                "parameters to verify DDP ranks remain synchronized."
+            )
+        },
+    )
     model_dtype: str = field(default="torch.bfloat16")
     model_max_length: int = field(
         default=512,

@@ -751,6 +751,64 @@ class LightweightEvalCheckpointCallback(TrainerCallback):
         return control
 
 
+class RankParameterConsistencyCallback(TrainerCallback):
+    """Check that trainable parameters stay synchronized across DDP ranks."""
+
+    def __init__(self, atol: float = 1e-4):
+        self.atol = float(atol)
+        self._last_checked_epoch = 0
+
+    @staticmethod
+    def _trainable_parameter_checksum(model) -> torch.Tensor:
+        core_model = model
+        while hasattr(core_model, "module"):
+            core_model = core_model.module
+
+        device = next(core_model.parameters()).device
+        checksum = torch.zeros(2, device=device, dtype=torch.float64)
+        for parameter in core_model.parameters():
+            if not parameter.requires_grad:
+                continue
+            values = parameter.detach().float()
+            checksum[0] += values.sum(dtype=torch.float64)
+            checksum[1] += values.square().sum(dtype=torch.float64)
+        return checksum
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        if model is None:
+            return control
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return control
+
+        completed_epoch = int(state.epoch or 0)
+        if completed_epoch <= 0:
+            return control
+        if abs(float(state.epoch or 0.0) - completed_epoch) > 1e-6:
+            return control
+        if completed_epoch == self._last_checked_epoch:
+            return control
+
+        checksum = self._trainable_parameter_checksum(model)
+        gathered = [torch.zeros_like(checksum) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(gathered, checksum)
+        stacked = torch.stack(gathered)
+        max_abs_diff = (stacked - stacked[0]).abs().max()
+        if max_abs_diff.item() > self.atol:
+            raise RuntimeError(
+                "DDP trainable parameter checksum mismatch across ranks: "
+                f"max_abs_diff={max_abs_diff.item():.6g}, checksums={stacked.detach().cpu().tolist()}"
+            )
+        if getattr(state, "is_world_process_zero", True):
+            print(
+                "[rank_parameter_check] "
+                f"epoch={completed_epoch} world_size={len(gathered)} "
+                f"max_abs_diff={max_abs_diff.item():.6g} checksum={stacked[0].detach().cpu().tolist()}",
+                flush=True,
+            )
+        self._last_checked_epoch = completed_epoch
+        return control
+
+
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
     tokenizer,
@@ -1345,6 +1403,8 @@ def train():
                 save_only_trainable=getattr(training_args, "save_only_trainable", True),
             )
         )
+    if bool(getattr(training_args, "rank_parameter_check", False)):
+        trainer.add_callback(RankParameterConsistencyCallback())
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
