@@ -15,6 +15,7 @@ action checkpoint:
 8. DDP sampler shuffles before rank slicing to avoid contiguous demo shards.
 9. Optional DDP rank parameter checksum catches unsynchronized rank state.
 10. Custom action losses call the outer model forward so DDP can sync ranks.
+11. Visual CoT uses GT future-frame embeddings and residual-code loss targets.
 
 Optionally pass ``--checkpoint-config path/to/config.json`` to verify that a
 trained checkpoint persisted the expected action config.
@@ -361,6 +362,39 @@ def check_ddp_safe_custom_action_forward() -> CheckResult:
     )
 
 
+def check_visual_cot_gt_subgoal_path() -> CheckResult:
+    dataset = read_repo_file("vila_u/data/libero_dataset_v2.py")
+    train = read_repo_file("vila_u/train/train_action_prediction_main.py")
+    ok = has_all(
+        dataset,
+        [
+            "include_subgoal_image: bool = False",
+            "return min(sample['timestep'] + offset, final_timestep)",
+            "subgoal_rgb = demo['obs/agentview_rgb'][subgoal_timestep]",
+            "item['subgoal_images'] = subgoal_tensor",
+        ],
+    )
+    ok = ok and has_all(
+        train,
+        [
+            "output[\"subgoal_images\"] = torch.stack",
+            "subgoal_embeds, subgoal_codes = core_model.encode_images(",
+            "insert_subgoal_embeds_before_action_block(",
+            "subgoal_embeds=subgoal_embeds",
+            "subgoal_hidden_states = outputs.last_hidden_state[subgoal_prediction_mask]",
+            "visual_loss = compute_visual_cot_loss(",
+            "subgoal_codes=subgoal_codes",
+            "subgoal_code_offset=core_model.llm.vocab_size",
+            "visual_logits = rqtransformer(",
+        ],
+    )
+    return CheckResult(
+        "Visual CoT GT future-frame path",
+        ok,
+        "expects GT future-frame embeddings to condition actions and residual codes to supervise visual loss",
+    )
+
+
 def check_visual_vocab_not_extended_for_action_slots() -> CheckResult:
     train = read_repo_file("vila_u/train/train_action_prediction_main.py")
     slot_fn = train[train.find("def select_action_slot_token_ids(") : train.find("def select_action_slot_token_id(")]
@@ -463,6 +497,7 @@ def main() -> int:
         check_rank_slice_after_shuffle_sampler,
         check_rank_parameter_consistency_callback,
         check_ddp_safe_custom_action_forward,
+        check_visual_cot_gt_subgoal_path,
     ]
 
     print("=" * 80)
