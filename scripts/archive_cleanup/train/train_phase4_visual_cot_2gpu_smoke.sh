@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Single-GPU Phase 4 Visual CoT smoke-test entrypoint.
-# Mirrors train_phase4_visual_cot_8gpu.sh but uses lighter defaults for quick
-# correctness checks before launching the full 8-GPU run.
+# Two-GPU Phase 4 Visual CoT smoke-test entrypoint.
+# Verifies the paper-aligned path where visual loss trains the depth
+# transformer while DDP keeps trainable parameters synchronized.
 
 set -e
 
@@ -21,7 +21,7 @@ export HF_HOME=${HF_HOME:-"/data/share/1919650160032350208/sj/hf_cache_shared"}
 export HF_ENDPOINT=${HF_ENDPOINT:-"https://hf-mirror.com"}
 export MODEL_PATH=${MODEL_PATH:-"/data/share/1919650160032350208/sj/vila-u/vila-u-7b-256"}
 export DATA_ROOT=${DATA_ROOT:-"/data/share/1919650160032350208/sj/LIBERO/datasets/libero_goal"}
-export OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-action-prediction-phase4-visual-cot-1gpu-test"}
+export OUTPUT_DIR=${OUTPUT_DIR:-"./checkpoints/vila-u-cot-libero-goal-2gpu-phase4-smoke"}
 
 # Reduce noisy startup/link warnings. Errors are still shown.
 export QUIET_TRAINING_LOGS=${QUIET_TRAINING_LOGS:-True}
@@ -34,31 +34,45 @@ if [ "$QUIET_TRAINING_LOGS" = "True" ] || [ "$QUIET_TRAINING_LOGS" = "true" ]; t
     export PYTHONWARNINGS=${PYTHONWARNINGS:-ignore::FutureWarning,ignore::UserWarning}
 fi
 
-# Single-GPU smoke-test defaults. Override these env vars for longer runs.
-export SINGLE_GPU_MODE=${SINGLE_GPU_MODE:-True}
-export NUM_GPUS=${NUM_GPUS:-1}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+# Two-GPU smoke-test defaults. Override these env vars for larger runs.
+export SINGLE_GPU_MODE=${SINGLE_GPU_MODE:-False}
+export NUM_GPUS=${NUM_GPUS:-2}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 export NUM_EPOCHS=${NUM_EPOCHS:-1}
-export BATCH_SIZE=${BATCH_SIZE:-1}
+export BATCH_SIZE=${BATCH_SIZE:-4}
 export ACC_STEP=${ACC_STEP:-1}
 export GRADIENT_CHECKPOINTING=${GRADIENT_CHECKPOINTING:-True}
 export DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-4}
+export SAVE_STRATEGY=${SAVE_STRATEGY:-no}
 export SAVE_STEPS=${SAVE_STEPS:-100}
-export LOGGING_STEPS=${LOGGING_STEPS:-1}
+export LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS=${LIGHTWEIGHT_EVAL_CHECKPOINT_EPOCHS:-0}
+export MAX_DEMOS_PER_TASK=${MAX_DEMOS_PER_TASK:-50}
+export MASTER_PORT=${MASTER_PORT:-25007}
 
 # Phase 4 Visual CoT defaults.
 export USE_HYBRID_ATTENTION=${USE_HYBRID_ATTENTION:-True}
 export USE_VISUAL_COT=${USE_VISUAL_COT:-True}
 export USE_VISUAL_COT_LOSS=${USE_VISUAL_COT_LOSS:-True}
 export TUNE_DEPTH_TRANSFORMER=${TUNE_DEPTH_TRANSFORMER:-True}
+export TUNE_VISION_TOWER=${TUNE_VISION_TOWER:-False}
+export TUNE_LANGUAGE_MODEL=${TUNE_LANGUAGE_MODEL:-True}
+export TUNE_MM_PROJECTOR=${TUNE_MM_PROJECTOR:-True}
 export VISUAL_LOSS_WEIGHT=${VISUAL_LOSS_WEIGHT:-1.0}
 export ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-1.0}
+export XYZ_LOSS_WEIGHT=${XYZ_LOSS_WEIGHT:-1.5}
+export GRIPPER_CLOSE_LOSS_WEIGHT=${GRIPPER_CLOSE_LOSS_WEIGHT:-2.0}
+export GRIPPER_TRANSITION_LOSS_WEIGHT=${GRIPPER_TRANSITION_LOSS_WEIGHT:-4.0}
 export USE_ACTION_PERCENTILE_BINS=${USE_ACTION_PERCENTILE_BINS:-True}
 export ACTION_BIN_LOW_PERCENTILE=${ACTION_BIN_LOW_PERCENTILE:-1.0}
 export ACTION_BIN_HIGH_PERCENTILE=${ACTION_BIN_HIGH_PERCENTILE:-99.0}
 export SUBGOAL_MIN_OFFSET=${SUBGOAL_MIN_OFFSET:-1}
 export SUBGOAL_MAX_OFFSET=${SUBGOAL_MAX_OFFSET:-${ACTION_CHUNK_SIZE:-10}}
 export SUBGOAL_SAMPLING_STRATEGY=${SUBGOAL_SAMPLING_STRATEGY:-uniform}
+
+# DDP diagnostics for the smoke test.
+export RANK_SLICE_AFTER_SHUFFLE=${RANK_SLICE_AFTER_SHUFFLE:-True}
+export SAMPLER_DEBUG=${SAMPLER_DEBUG:-True}
+export RANK_PARAMETER_CHECK=${RANK_PARAMETER_CHECK:-True}
 
 # Hybrid attention currently requires eager 4D masks.
 export ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-eager}
