@@ -369,7 +369,9 @@ def check_visual_cot_gt_subgoal_path() -> CheckResult:
         dataset,
         [
             "include_subgoal_image: bool = False",
-            "return min(sample['timestep'] + offset, final_timestep)",
+            "if self.remove_pause_intervals:",
+            "target_filtered_t = min(filtered_t + offset, len(non_pause_indices) - 1)",
+            "return int(non_pause_indices[target_filtered_t])",
             "subgoal_rgb = demo['obs/agentview_rgb'][subgoal_timestep]",
             "item['subgoal_images'] = subgoal_tensor",
         ],
@@ -391,7 +393,7 @@ def check_visual_cot_gt_subgoal_path() -> CheckResult:
     return CheckResult(
         "Visual CoT GT future-frame path",
         ok,
-        "expects GT future-frame embeddings to condition actions and residual codes to supervise visual loss",
+        "expects GT future action-step embeddings to condition actions and residual codes to supervise visual loss",
     )
 
 

@@ -269,6 +269,12 @@ class LiberoGoalDataset(Dataset):
         else:
             offset = int(np.random.randint(self.subgoal_min_offset, self.subgoal_max_offset + 1))
 
+        if self.remove_pause_intervals:
+            non_pause_indices = sample['non_pause_indices']
+            filtered_t = sample['filtered_timestep']
+            target_filtered_t = min(filtered_t + offset, len(non_pause_indices) - 1)
+            return int(non_pause_indices[target_filtered_t])
+
         final_timestep = max(0, sample['num_frames'] - 1)
         return min(sample['timestep'] + offset, final_timestep)
 

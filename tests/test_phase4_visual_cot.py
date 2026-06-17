@@ -88,6 +88,43 @@ def test_insert_subgoal_embeds_before_action_block():
     print("✓ subgoal insertion before action block verified")
 
 
+def test_subgoal_timestep_uses_filtered_action_offset():
+    from vila_u.data.libero_dataset_v2 import LiberoGoalDataset
+
+    sample = {
+        "timestep": 10,
+        "filtered_timestep": 2,
+        "non_pause_indices": [0, 4, 10, 20, 35],
+        "num_frames": 40,
+    }
+
+    dataset = object.__new__(LiberoGoalDataset)
+    dataset.remove_pause_intervals = True
+    dataset.subgoal_sampling_strategy = "fixed"
+    dataset.subgoal_min_offset = 1
+
+    dataset.subgoal_max_offset = 1
+    assert dataset._sample_subgoal_timestep(sample) == 20
+
+    dataset.subgoal_max_offset = 2
+    assert dataset._sample_subgoal_timestep(sample) == 35
+
+    dataset.subgoal_max_offset = 10
+    assert dataset._sample_subgoal_timestep(sample) == 35
+
+    dataset.remove_pause_intervals = False
+    dataset.subgoal_max_offset = 2
+    assert dataset._sample_subgoal_timestep(sample) == 12
+
+    dataset.subgoal_sampling_strategy = "uniform"
+    dataset.subgoal_min_offset = 1
+    dataset.subgoal_max_offset = 2
+    observed = {dataset._sample_subgoal_timestep(sample) for _ in range(50)}
+    assert observed.issubset({11, 12})
+    assert observed
+    print("✓ subgoal timestep uses filtered action-step offsets")
+
+
 class FakeRQVAE(torch.nn.Module):
     def __init__(self, codes):
         super().__init__()
@@ -296,6 +333,7 @@ def test_freeze_patch_keeps_depth_transformer_trainable():
 if __name__ == "__main__":
     test_causal_attention_mask_4d()
     test_insert_subgoal_embeds_before_action_block()
+    test_subgoal_timestep_uses_filtered_action_offset()
     test_compute_visual_cot_loss_with_fake_rqtransformer()
     test_compute_visual_cot_loss_with_offset_codes()
     test_depth_transformer_can_be_trainable_independently()
