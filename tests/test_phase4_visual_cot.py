@@ -88,9 +88,11 @@ def test_insert_subgoal_embeds_before_action_block():
     print("✓ subgoal insertion before action block verified")
 
 
-class FakeRQVAE:
+class FakeRQVAE(torch.nn.Module):
     def __init__(self, codes):
+        super().__init__()
         self.codes = codes
+        self.anchor = torch.nn.Parameter(torch.zeros(()))
 
     def encode_image(self, images):
         return self.codes.to(images.device), None
