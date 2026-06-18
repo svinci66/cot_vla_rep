@@ -1255,6 +1255,8 @@ class VILAUMetaForCausalLM(ABC):
         subgoal_latents = generated_features.reshape(generated_features.shape[0], side, side, -1)
         subgoal_image = vision_model.rqvaesiglip.decode(subgoal_latents)
         subgoal_image = subgoal_image.to(torch.float32).add_(1).mul_(127.5).clamp_(0, 255)
+        # Convert model-space image back to LIBERO RGB space for visualization/debug only.
+        subgoal_image = rotate_libero_image_180(subgoal_image)
         return subgoal_embeds, generated_codes, subgoal_image
 
     @torch.no_grad()

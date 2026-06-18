@@ -187,7 +187,15 @@ def check_libero_rotation() -> CheckResult:
     ok = ok and "rgb = rotate_libero_image_180(rgb)" in dataset
     ok = ok and "obs_rgb = rotate_libero_image_180(obs_rgb)" in legacy_dataset
     ok = ok and "image = rotate_libero_image_180(image)" in model
-    ok = ok and "subgoal_image = rotate_libero_image_180(subgoal_image)" in model
+    visual_cot_fn = model[model.find("def generate_visual_cot_subgoal(") : model.find("def predict_action_with_generated_subgoal(")]
+    ok = ok and has_all(
+        visual_cot_fn,
+        [
+            "subgoal_embeds = self.mm_projector(generated_features).to(dtype=self.dtype)",
+            "subgoal_image = vision_model.rqvaesiglip.decode(subgoal_latents)",
+            "subgoal_image = rotate_libero_image_180(subgoal_image)",
+        ],
+    )
     return CheckResult(
         "LIBERO 180-degree image rotation",
         ok,
