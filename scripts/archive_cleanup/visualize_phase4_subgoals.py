@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 from vila_u.model.builder import load_pretrained_model
 from vila_u.train.utils import get_checkpoint_path
+from vila_u.utils.libero_image import rotate_libero_image_180
 
 
 def resolve_model_path(model_path: str) -> str:
@@ -65,7 +66,109 @@ def iter_libero_samples(data_root: str, subgoal_offset: int):
                         "subgoal_timestep": subgoal_timestep,
                         "image": demo["obs/agentview_rgb"][timestep],
                         "oracle_subgoal": demo["obs/agentview_rgb"][subgoal_timestep],
+                        "selection": "sequential",
+                        "subgoal_offset_mode": "raw_frame",
                     }
+
+
+def is_noop_action(
+    action: np.ndarray,
+    previous_action: np.ndarray | None,
+    pause_threshold: float,
+    gripper_pause_threshold: float,
+) -> bool:
+    position_norm = np.linalg.norm(action[:3])
+    rotation_norm = np.linalg.norm(action[3:6])
+    if action.shape[0] > 6 and previous_action is not None and previous_action.shape[0] > 6:
+        gripper_delta = abs(float(action[6]) - float(previous_action[6]))
+    else:
+        gripper_delta = abs(float(action[6])) if action.shape[0] > 6 else 0.0
+    return (
+        position_norm < pause_threshold
+        and rotation_norm < pause_threshold
+        and gripper_delta < gripper_pause_threshold
+    )
+
+
+def compute_non_pause_indices(
+    actions: np.ndarray,
+    pause_threshold: float,
+    gripper_pause_threshold: float,
+) -> list[int]:
+    indices = []
+    previous_action = None
+    for timestep, action in enumerate(actions):
+        if not is_noop_action(action, previous_action, pause_threshold, gripper_pause_threshold):
+            indices.append(timestep)
+        previous_action = action
+    return indices
+
+
+def image_mae(image: np.ndarray, oracle: np.ndarray) -> float:
+    image = rotate_libero_image_180(image).astype(np.float32) / 255.0
+    oracle = rotate_libero_image_180(oracle).astype(np.float32) / 255.0
+    return float(np.mean(np.abs(image - oracle)))
+
+
+def collect_high_delta_samples(
+    data_root: str,
+    subgoal_offset: int,
+    max_samples: int,
+    action_chunk_size: int,
+    pause_threshold: float,
+    gripper_pause_threshold: float,
+) -> list[dict]:
+    samples = []
+    hdf5_files = sorted(
+        filename for filename in os.listdir(data_root) if filename.endswith(".hdf5")
+    )
+    if not hdf5_files:
+        raise FileNotFoundError(f"No .hdf5 files found under {data_root}")
+
+    for filename in tqdm(hdf5_files, desc="scoring high-delta samples"):
+        data_file = os.path.join(data_root, filename)
+        with h5py.File(data_file, "r") as h5_file:
+            instruction = json.loads(h5_file["data"].attrs["problem_info"])["language_instruction"]
+            for demo_name in sorted(h5_file["data"].keys()):
+                demo = h5_file["data"][demo_name]
+                actions = demo["actions"][:]
+                non_pause_indices = compute_non_pause_indices(
+                    actions,
+                    pause_threshold=pause_threshold,
+                    gripper_pause_threshold=gripper_pause_threshold,
+                )
+                max_filtered_start = len(non_pause_indices) - action_chunk_size + 1
+                if max_filtered_start <= 0:
+                    continue
+
+                for filtered_t in range(max_filtered_start):
+                    raw_t = int(non_pause_indices[filtered_t])
+                    target_filtered_t = min(
+                        filtered_t + subgoal_offset,
+                        len(non_pause_indices) - 1,
+                    )
+                    subgoal_timestep = int(non_pause_indices[target_filtered_t])
+                    image = demo["obs/agentview_rgb"][raw_t]
+                    oracle_subgoal = demo["obs/agentview_rgb"][subgoal_timestep]
+                    delta = image_mae(image, oracle_subgoal)
+                    samples.append(
+                        {
+                            "data_file": data_file,
+                            "demo_name": demo_name,
+                            "instruction": instruction,
+                            "timestep": raw_t,
+                            "filtered_timestep": filtered_t,
+                            "subgoal_timestep": subgoal_timestep,
+                            "image": image,
+                            "oracle_subgoal": oracle_subgoal,
+                            "delta_mae": delta,
+                            "selection": "high-delta",
+                            "subgoal_offset_mode": "filtered_action_step",
+                        }
+                    )
+
+    samples = sorted(samples, key=lambda sample: sample["delta_mae"], reverse=True)
+    return samples[:max_samples]
 
 
 def image_from_array(array: np.ndarray | torch.Tensor) -> Image.Image:
@@ -130,6 +233,10 @@ def main():
     parser.add_argument("--max-samples", type=int, default=4)
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--subgoal-offset", type=int, default=10)
+    parser.add_argument("--selection", choices=("sequential", "high-delta"), default="sequential")
+    parser.add_argument("--action-chunk-size", type=int, default=10)
+    parser.add_argument("--pause-threshold", type=float, default=0.01)
+    parser.add_argument("--gripper-pause-threshold", type=float, default=1e-6)
     parser.add_argument("--mode", choices=("oracle", "generated", "both"), default="both")
     parser.add_argument("--cfg", type=float, default=3.0)
     args = parser.parse_args()
@@ -150,13 +257,31 @@ def main():
         "mode": args.mode,
         "cfg": args.cfg,
         "subgoal_offset": args.subgoal_offset,
+        "selection": args.selection,
+        "action_chunk_size": args.action_chunk_size,
+        "pause_threshold": args.pause_threshold,
+        "gripper_pause_threshold": args.gripper_pause_threshold,
         "max_samples": args.max_samples,
     }
     (output_dir / "run_metadata.json").write_text(json.dumps(run_metadata, indent=2), encoding="utf-8")
 
-    sample_iter = iter_libero_samples(args.data_root, args.subgoal_offset)
+    if args.selection == "high-delta":
+        samples = collect_high_delta_samples(
+            data_root=args.data_root,
+            subgoal_offset=args.subgoal_offset,
+            max_samples=args.start_index + args.max_samples,
+            action_chunk_size=args.action_chunk_size,
+            pause_threshold=args.pause_threshold,
+            gripper_pause_threshold=args.gripper_pause_threshold,
+        )
+        sample_iter = iter(samples)
+        total = len(samples)
+    else:
+        sample_iter = iter_libero_samples(args.data_root, args.subgoal_offset)
+        total = args.start_index + args.max_samples
+
     saved = 0
-    for sample_idx, sample in enumerate(tqdm(sample_iter, total=args.start_index + args.max_samples)):
+    for sample_idx, sample in enumerate(tqdm(sample_iter, total=total)):
         if sample_idx < args.start_index:
             continue
         if saved >= args.max_samples:
@@ -174,7 +299,13 @@ def main():
             "instruction": sample["instruction"],
             "timestep": sample["timestep"],
             "subgoal_timestep": sample["subgoal_timestep"],
+            "selection": sample["selection"],
+            "subgoal_offset_mode": sample["subgoal_offset_mode"],
         }
+        if "delta_mae" in sample:
+            metadata["delta_mae"] = sample["delta_mae"]
+        if "filtered_timestep" in sample:
+            metadata["filtered_timestep"] = sample["filtered_timestep"]
 
         if args.mode in {"generated", "both"}:
             with torch.no_grad():
