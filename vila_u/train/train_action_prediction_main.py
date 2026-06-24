@@ -125,11 +125,11 @@ class ActionPredictionArguments:
         metadata={"help": "Minimum future-frame offset when sampling Phase 4 subgoal images"}
     )
     subgoal_max_offset: Optional[int] = field(
-        default=None,
-        metadata={"help": "Maximum future-frame offset when sampling Phase 4 subgoal images; defaults to action_chunk_size"}
+        default=10,
+        metadata={"help": "Maximum future-frame offset when sampling Phase 4 subgoal images; defaults to 10"}
     )
     subgoal_sampling_strategy: str = field(
-        default="uniform",
+        default="fixed",
         metadata={"help": "Subgoal frame sampling strategy: uniform or fixed"}
     )
     use_visual_cot_loss: bool = field(

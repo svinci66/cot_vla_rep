@@ -42,8 +42,8 @@ class LiberoGoalDataset(Dataset):
         pause_threshold: float = 0.01,
         include_subgoal_image: bool = False,
         subgoal_min_offset: int = 1,
-        subgoal_max_offset: Optional[int] = None,
-        subgoal_sampling_strategy: str = "uniform",
+        subgoal_max_offset: Optional[int] = 10,
+        subgoal_sampling_strategy: str = "fixed",
         max_task_files: Optional[int] = None,
         max_demos_per_task: Optional[int] = None,
         task_file: Optional[str] = None,
@@ -61,8 +61,8 @@ class LiberoGoalDataset(Dataset):
             pause_threshold: Threshold for detecting pause (L2 norm of action)
             include_subgoal_image: Whether to return a future frame as subgoal image
             subgoal_min_offset: Minimum future-frame offset for subgoal sampling
-            subgoal_max_offset: Maximum future-frame offset for subgoal sampling. Defaults to action_chunk_size
-            subgoal_sampling_strategy: "uniform" samples a random offset, "fixed" uses subgoal_max_offset
+            subgoal_max_offset: Maximum future-frame offset for subgoal sampling. Defaults to 10
+            subgoal_sampling_strategy: "fixed" uses subgoal_max_offset, "uniform" samples a random offset
             max_task_files: Optional limit on the number of HDF5 task files to load
             max_demos_per_task: Optional limit on demonstrations loaded per task file
             task_file: Optional exact HDF5 task filename to load
@@ -78,7 +78,7 @@ class LiberoGoalDataset(Dataset):
         self.pause_threshold = pause_threshold
         self.include_subgoal_image = include_subgoal_image
         self.subgoal_min_offset = max(1, int(subgoal_min_offset))
-        self.subgoal_max_offset = int(subgoal_max_offset or action_chunk_size)
+        self.subgoal_max_offset = int(subgoal_max_offset if subgoal_max_offset is not None else 10)
         if self.subgoal_max_offset < self.subgoal_min_offset:
             raise ValueError(
                 "subgoal_max_offset must be greater than or equal to subgoal_min_offset"
