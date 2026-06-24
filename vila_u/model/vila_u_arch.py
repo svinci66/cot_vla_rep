@@ -1100,6 +1100,7 @@ class VILAUMetaForCausalLM(ABC):
         image_processor=None,
         cfg: float = 3.0,
         return_image: bool = True,
+        use_kv_cache: bool = True,
     ):
         """Generate subgoal image embeddings from observation and instruction."""
         self.eval()
@@ -1200,8 +1201,14 @@ class VILAUMetaForCausalLM(ABC):
         generated_code_steps = []
         current_embeds = inputs_embeds
         current_attention_mask = mm_attention_mask
+        past_key_values = None
+        last_hidden = None
 
-        for _ in range(self.vision_tower.image_tokens):
+        if use_kv_cache:
+            if not current_attention_mask.all():
+                raise RuntimeError(
+                    "Cached subgoal generation expects packed, padding-free prefix embeddings"
+                )
             causal_attention_mask = build_causal_attention_mask(
                 current_attention_mask,
                 dtype=current_embeds.dtype,
@@ -1210,17 +1217,38 @@ class VILAUMetaForCausalLM(ABC):
                 input_ids=None,
                 attention_mask=causal_attention_mask,
                 inputs_embeds=current_embeds,
-                use_cache=False,
+                use_cache=True,
                 output_attentions=False,
                 output_hidden_states=False,
                 return_dict=True,
                 seqlens_in_batch=None,
             )
-            valid_lens = current_attention_mask.long().sum(dim=-1)
-            subgoal_seed_hidden = outputs.last_hidden_state[
-                torch.arange(outputs.last_hidden_state.shape[0], device=outputs.last_hidden_state.device),
-                valid_lens - 1,
-            ].unsqueeze(1)
+            past_key_values = outputs.past_key_values
+            last_hidden = outputs.last_hidden_state[:, -1:, :]
+
+        for _ in range(self.vision_tower.image_tokens):
+            if use_kv_cache:
+                subgoal_seed_hidden = last_hidden
+            else:
+                causal_attention_mask = build_causal_attention_mask(
+                    current_attention_mask,
+                    dtype=current_embeds.dtype,
+                )
+                outputs = self.llm.model(
+                    input_ids=None,
+                    attention_mask=causal_attention_mask,
+                    inputs_embeds=current_embeds,
+                    use_cache=False,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
+                    seqlens_in_batch=None,
+                )
+                valid_lens = current_attention_mask.long().sum(dim=-1)
+                subgoal_seed_hidden = outputs.last_hidden_state[
+                    torch.arange(outputs.last_hidden_state.shape[0], device=outputs.last_hidden_state.device),
+                    valid_lens - 1,
+                ].unsqueeze(1)
 
             generated_step_features, generated_step_codes = vision_model.rqtransformer.generate(
                 subgoal_seed_hidden,
@@ -1231,18 +1259,33 @@ class VILAUMetaForCausalLM(ABC):
             generated_code_steps.append(generated_step_codes[:1])
 
             next_step_embeds = self.mm_projector(generated_step_features).to(dtype=self.dtype)
-            current_embeds = torch.cat([current_embeds, next_step_embeds], dim=1)
-            current_attention_mask = torch.cat(
-                [
-                    current_attention_mask,
-                    torch.ones(
-                        (current_attention_mask.shape[0], 1),
-                        dtype=current_attention_mask.dtype,
-                        device=current_attention_mask.device,
-                    ),
-                ],
-                dim=1,
-            )
+            if use_kv_cache:
+                outputs = self.llm.model(
+                    input_ids=None,
+                    attention_mask=None,
+                    past_key_values=past_key_values,
+                    inputs_embeds=next_step_embeds,
+                    use_cache=True,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
+                    seqlens_in_batch=None,
+                )
+                past_key_values = outputs.past_key_values
+                last_hidden = outputs.last_hidden_state[:, -1:, :]
+            else:
+                current_embeds = torch.cat([current_embeds, next_step_embeds], dim=1)
+                current_attention_mask = torch.cat(
+                    [
+                        current_attention_mask,
+                        torch.ones(
+                            (current_attention_mask.shape[0], 1),
+                            dtype=current_attention_mask.dtype,
+                            device=current_attention_mask.device,
+                        ),
+                    ],
+                    dim=1,
+                )
 
         generated_features = torch.cat(generated_feature_steps, dim=1)
         generated_codes = torch.cat(generated_code_steps, dim=1)
@@ -1268,6 +1311,7 @@ class VILAUMetaForCausalLM(ABC):
         cfg: float = 3.0,
         return_subgoal: bool = False,
         return_debug: bool = False,
+        use_subgoal_kv_cache: bool = True,
     ):
         subgoal_embeds, subgoal_codes, subgoal_image = self.generate_visual_cot_subgoal(
             image=image,
@@ -1275,6 +1319,7 @@ class VILAUMetaForCausalLM(ABC):
             image_processor=image_processor,
             cfg=cfg,
             return_image=return_subgoal,
+            use_kv_cache=use_subgoal_kv_cache,
         )
         actions = self.predict_action(
             image=image,
