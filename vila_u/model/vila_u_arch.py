@@ -1201,30 +1201,37 @@ class VILAUMetaForCausalLM(ABC):
         generated_code_steps = []
         current_embeds = inputs_embeds
         current_attention_mask = mm_attention_mask
-        past_key_values = None
+        branch_past_key_values = None
         last_hidden = None
 
         if use_kv_cache:
-            if not current_attention_mask.all():
-                raise RuntimeError(
-                    "Cached subgoal generation expects packed, padding-free prefix embeddings"
+            branch_past_key_values = []
+            branch_last_hidden = []
+            for branch_idx in range(current_embeds.shape[0]):
+                branch_len = int(current_attention_mask[branch_idx].long().sum().item())
+                branch_embeds = current_embeds[branch_idx : branch_idx + 1, :branch_len]
+                branch_attention_mask = torch.ones(
+                    (1, branch_len),
+                    dtype=current_attention_mask.dtype,
+                    device=current_attention_mask.device,
                 )
-            causal_attention_mask = build_causal_attention_mask(
-                current_attention_mask,
-                dtype=current_embeds.dtype,
-            )
-            outputs = self.llm.model(
-                input_ids=None,
-                attention_mask=causal_attention_mask,
-                inputs_embeds=current_embeds,
-                use_cache=True,
-                output_attentions=False,
-                output_hidden_states=False,
-                return_dict=True,
-                seqlens_in_batch=None,
-            )
-            past_key_values = outputs.past_key_values
-            last_hidden = outputs.last_hidden_state[:, -1:, :]
+                causal_attention_mask = build_causal_attention_mask(
+                    branch_attention_mask,
+                    dtype=branch_embeds.dtype,
+                )
+                outputs = self.llm.model(
+                    input_ids=None,
+                    attention_mask=causal_attention_mask,
+                    inputs_embeds=branch_embeds,
+                    use_cache=True,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
+                    seqlens_in_batch=None,
+                )
+                branch_past_key_values.append(outputs.past_key_values)
+                branch_last_hidden.append(outputs.last_hidden_state[:, -1:, :])
+            last_hidden = torch.cat(branch_last_hidden, dim=0)
 
         for _ in range(self.vision_tower.image_tokens):
             if use_kv_cache:
@@ -1260,19 +1267,22 @@ class VILAUMetaForCausalLM(ABC):
 
             next_step_embeds = self.mm_projector(generated_step_features).to(dtype=self.dtype)
             if use_kv_cache:
-                outputs = self.llm.model(
-                    input_ids=None,
-                    attention_mask=None,
-                    past_key_values=past_key_values,
-                    inputs_embeds=next_step_embeds,
-                    use_cache=True,
-                    output_attentions=False,
-                    output_hidden_states=False,
-                    return_dict=True,
-                    seqlens_in_batch=None,
-                )
-                past_key_values = outputs.past_key_values
-                last_hidden = outputs.last_hidden_state[:, -1:, :]
+                branch_last_hidden = []
+                for branch_idx in range(next_step_embeds.shape[0]):
+                    outputs = self.llm.model(
+                        input_ids=None,
+                        attention_mask=None,
+                        past_key_values=branch_past_key_values[branch_idx],
+                        inputs_embeds=next_step_embeds[branch_idx : branch_idx + 1],
+                        use_cache=True,
+                        output_attentions=False,
+                        output_hidden_states=False,
+                        return_dict=True,
+                        seqlens_in_batch=None,
+                    )
+                    branch_past_key_values[branch_idx] = outputs.past_key_values
+                    branch_last_hidden.append(outputs.last_hidden_state[:, -1:, :])
+                last_hidden = torch.cat(branch_last_hidden, dim=0)
             else:
                 current_embeds = torch.cat([current_embeds, next_step_embeds], dim=1)
                 current_attention_mask = torch.cat(
