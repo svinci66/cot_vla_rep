@@ -140,6 +140,14 @@ class ActionPredictionArguments:
         default=1.0,
         metadata={"help": "Weight for Phase 4 visual subgoal residual-code loss"}
     )
+    use_visual_change_weight: bool = field(
+        default=False,
+        metadata={"help": "Upweight visual-token CE at positions whose GT future codes differ from current observation codes"}
+    )
+    visual_change_weight: float = field(
+        default=2.0,
+        metadata={"help": "CE multiplier for changed visual-token positions when use_visual_change_weight=True"}
+    )
     action_loss_weight: float = field(
         default=1.0,
         metadata={"help": "Weight for discrete action token loss"}
@@ -583,6 +591,9 @@ class ActionPredictionTrainer(VILAUTrainer):
                         inputs["subgoal_images"],
                         subgoal_codes=subgoal_codes,
                         subgoal_code_offset=core_model.llm.vocab_size,
+                        current_images=inputs["images"],
+                        use_change_weight=getattr(core_model.config, "use_visual_change_weight", False),
+                        change_weight=float(getattr(core_model.config, "visual_change_weight", 2.0)),
                     )
                     loss = loss + visual_loss * float(getattr(core_model.config, "visual_loss_weight", 1.0))
                 if return_outputs:
@@ -1008,6 +1019,10 @@ def compute_visual_cot_loss(
     subgoal_images: torch.Tensor,
     subgoal_codes: torch.Tensor | None = None,
     subgoal_code_offset: int = 0,
+    current_images: torch.Tensor | None = None,
+    current_codes: torch.Tensor | None = None,
+    use_change_weight: bool = False,
+    change_weight: float = 2.0,
 ) -> torch.Tensor:
     vision_tower = core_model.get_vision_tower()
     vision_model = vision_tower.vision_tower
@@ -1033,10 +1048,44 @@ def compute_visual_cot_loss(
         rqvae,
     )
     batch_size, seq_len, depth, vocab_size = visual_logits.shape
-    return torch.nn.functional.cross_entropy(
+    per_token_loss = torch.nn.functional.cross_entropy(
         visual_logits.reshape(batch_size * seq_len * depth, vocab_size),
         subgoal_codes.reshape(batch_size * seq_len * depth).to(visual_logits.device),
-    )
+        reduction="none",
+    ).view(batch_size, seq_len, depth)
+
+    if use_change_weight and float(change_weight) != 1.0:
+        if current_codes is None and current_images is not None:
+            current_images = current_images.to(
+                device=vision_param.device,
+                dtype=vision_param.dtype,
+                non_blocking=True,
+            )
+            with torch.no_grad():
+                current_codes, _ = rqvae.encode_image(current_images)
+        if current_codes is not None:
+            current_codes = current_codes.reshape(current_codes.shape[0], -1, current_codes.shape[-1]).long()
+            if (
+                subgoal_code_offset
+                and current_codes.numel() > 0
+                and int(current_codes.min().item()) >= int(subgoal_code_offset)
+            ):
+                current_codes = current_codes - int(subgoal_code_offset)
+            if current_codes.shape != subgoal_codes.shape:
+                raise ValueError(
+                    f"current_codes shape {tuple(current_codes.shape)} does not match "
+                    f"subgoal_codes shape {tuple(subgoal_codes.shape)}"
+                )
+            changed_positions = current_codes.to(subgoal_codes.device).ne(subgoal_codes).any(dim=-1)
+            weights = torch.ones_like(per_token_loss)
+            weights = torch.where(
+                changed_positions.unsqueeze(-1),
+                torch.full_like(weights, float(change_weight)),
+                weights,
+            )
+            return (per_token_loss * weights).sum() / weights.sum().clamp_min(1.0)
+
+    return per_token_loss.mean()
 
 
 def compute_dataset_action_bin_edges(train_dataset, data_args: ActionPredictionArguments):
@@ -1223,6 +1272,8 @@ def train():
     config.subgoal_sampling_strategy = action_args.subgoal_sampling_strategy
     config.use_visual_cot_loss = action_args.use_visual_cot_loss
     config.visual_loss_weight = action_args.visual_loss_weight
+    config.use_visual_change_weight = action_args.use_visual_change_weight
+    config.visual_change_weight = action_args.visual_change_weight
     config.action_loss_weight = action_args.action_loss_weight
     config.xyz_loss_weight = action_args.xyz_loss_weight
     config.gripper_close_loss_weight = action_args.gripper_close_loss_weight

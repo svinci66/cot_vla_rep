@@ -61,6 +61,8 @@ TUNE_LANGUAGE_MODEL=${TUNE_LANGUAGE_MODEL:-True}
 TUNE_MM_PROJECTOR=${TUNE_MM_PROJECTOR:-True}
 TUNE_VISION_TOWER=${TUNE_VISION_TOWER:-False}
 VISUAL_LOSS_WEIGHT=${VISUAL_LOSS_WEIGHT:-1.0}
+USE_VISUAL_CHANGE_WEIGHT=${USE_VISUAL_CHANGE_WEIGHT:-False}
+VISUAL_CHANGE_WEIGHT=${VISUAL_CHANGE_WEIGHT:-2.0}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-1.0}
 XYZ_LOSS_WEIGHT=${XYZ_LOSS_WEIGHT:-1.0}
 GRIPPER_CLOSE_LOSS_WEIGHT=${GRIPPER_CLOSE_LOSS_WEIGHT:-1.0}
@@ -249,6 +251,8 @@ echo "  Tune Language Model: $TUNE_LANGUAGE_MODEL"
 echo "  Tune MM Projector: $TUNE_MM_PROJECTOR"
 echo "  Tune Vision Tower: $TUNE_VISION_TOWER"
 echo "  Visual Loss Weight: $VISUAL_LOSS_WEIGHT"
+echo "  Use Visual Change Weight: $USE_VISUAL_CHANGE_WEIGHT"
+echo "  Visual Change Weight: $VISUAL_CHANGE_WEIGHT"
 echo "  Action Loss Weight: $ACTION_LOSS_WEIGHT"
 echo "  XYZ Loss Weight: $XYZ_LOSS_WEIGHT"
 echo "  Gripper Close Loss Weight: $GRIPPER_CLOSE_LOSS_WEIGHT"
@@ -313,6 +317,8 @@ train_args=(
     --use_visual_cot_loss "$USE_VISUAL_COT_LOSS"
     --tune_depth_transformer "$TUNE_DEPTH_TRANSFORMER"
     --visual_loss_weight "$VISUAL_LOSS_WEIGHT"
+    --use_visual_change_weight "$USE_VISUAL_CHANGE_WEIGHT"
+    --visual_change_weight "$VISUAL_CHANGE_WEIGHT"
     --action_loss_weight "$ACTION_LOSS_WEIGHT"
     --xyz_loss_weight "$XYZ_LOSS_WEIGHT"
     --gripper_close_loss_weight "$GRIPPER_CLOSE_LOSS_WEIGHT"
