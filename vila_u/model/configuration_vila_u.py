@@ -59,5 +59,7 @@ class VILAUConfig(PretrainedConfig):
         self.visual_loss_weight = kwargs.pop("visual_loss_weight", 1.0)
         self.use_visual_change_weight = kwargs.pop("use_visual_change_weight", False)
         self.visual_change_weight = kwargs.pop("visual_change_weight", 2.0)
+        self.visual_change_weight_mode = kwargs.pop("visual_change_weight_mode", "binary")
+        self.visual_unchanged_weight = kwargs.pop("visual_unchanged_weight", 1.0)
         self.action_loss_weight = kwargs.pop("action_loss_weight", 1.0)
         self.tune_depth_transformer = kwargs.pop("tune_depth_transformer", True)

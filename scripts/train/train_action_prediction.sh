@@ -63,6 +63,8 @@ TUNE_VISION_TOWER=${TUNE_VISION_TOWER:-False}
 VISUAL_LOSS_WEIGHT=${VISUAL_LOSS_WEIGHT:-1.0}
 USE_VISUAL_CHANGE_WEIGHT=${USE_VISUAL_CHANGE_WEIGHT:-False}
 VISUAL_CHANGE_WEIGHT=${VISUAL_CHANGE_WEIGHT:-2.0}
+VISUAL_CHANGE_WEIGHT_MODE=${VISUAL_CHANGE_WEIGHT_MODE:-binary}
+VISUAL_UNCHANGED_WEIGHT=${VISUAL_UNCHANGED_WEIGHT:-1.0}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-1.0}
 XYZ_LOSS_WEIGHT=${XYZ_LOSS_WEIGHT:-1.0}
 GRIPPER_CLOSE_LOSS_WEIGHT=${GRIPPER_CLOSE_LOSS_WEIGHT:-1.0}
@@ -252,7 +254,9 @@ echo "  Tune MM Projector: $TUNE_MM_PROJECTOR"
 echo "  Tune Vision Tower: $TUNE_VISION_TOWER"
 echo "  Visual Loss Weight: $VISUAL_LOSS_WEIGHT"
 echo "  Use Visual Change Weight: $USE_VISUAL_CHANGE_WEIGHT"
+echo "  Visual Change Weight Mode: $VISUAL_CHANGE_WEIGHT_MODE"
 echo "  Visual Change Weight: $VISUAL_CHANGE_WEIGHT"
+echo "  Visual Unchanged Weight: $VISUAL_UNCHANGED_WEIGHT"
 echo "  Action Loss Weight: $ACTION_LOSS_WEIGHT"
 echo "  XYZ Loss Weight: $XYZ_LOSS_WEIGHT"
 echo "  Gripper Close Loss Weight: $GRIPPER_CLOSE_LOSS_WEIGHT"
@@ -319,6 +323,8 @@ train_args=(
     --visual_loss_weight "$VISUAL_LOSS_WEIGHT"
     --use_visual_change_weight "$USE_VISUAL_CHANGE_WEIGHT"
     --visual_change_weight "$VISUAL_CHANGE_WEIGHT"
+    --visual_change_weight_mode "$VISUAL_CHANGE_WEIGHT_MODE"
+    --visual_unchanged_weight "$VISUAL_UNCHANGED_WEIGHT"
     --action_loss_weight "$ACTION_LOSS_WEIGHT"
     --xyz_loss_weight "$XYZ_LOSS_WEIGHT"
     --gripper_close_loss_weight "$GRIPPER_CLOSE_LOSS_WEIGHT"

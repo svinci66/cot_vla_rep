@@ -148,6 +148,14 @@ class ActionPredictionArguments:
         default=2.0,
         metadata={"help": "CE multiplier for changed visual-token positions when use_visual_change_weight=True"}
     )
+    visual_change_weight_mode: str = field(
+        default="binary",
+        metadata={"help": "Visual change weighting mode: binary or dynamic"}
+    )
+    visual_unchanged_weight: float = field(
+        default=1.0,
+        metadata={"help": "CE multiplier for unchanged visual-token positions when use_visual_change_weight=True"}
+    )
     action_loss_weight: float = field(
         default=1.0,
         metadata={"help": "Weight for discrete action token loss"}
@@ -594,6 +602,8 @@ class ActionPredictionTrainer(VILAUTrainer):
                         current_images=inputs["images"],
                         use_change_weight=getattr(core_model.config, "use_visual_change_weight", False),
                         change_weight=float(getattr(core_model.config, "visual_change_weight", 2.0)),
+                        change_weight_mode=getattr(core_model.config, "visual_change_weight_mode", "binary"),
+                        unchanged_weight=float(getattr(core_model.config, "visual_unchanged_weight", 1.0)),
                     )
                     loss = loss + visual_loss * float(getattr(core_model.config, "visual_loss_weight", 1.0))
                 if return_outputs:
@@ -1023,6 +1033,8 @@ def compute_visual_cot_loss(
     current_codes: torch.Tensor | None = None,
     use_change_weight: bool = False,
     change_weight: float = 2.0,
+    change_weight_mode: str = "binary",
+    unchanged_weight: float = 1.0,
 ) -> torch.Tensor:
     vision_tower = core_model.get_vision_tower()
     vision_model = vision_tower.vision_tower
@@ -1054,7 +1066,9 @@ def compute_visual_cot_loss(
         reduction="none",
     ).view(batch_size, seq_len, depth)
 
-    if use_change_weight and float(change_weight) != 1.0:
+    if use_change_weight and (
+        float(change_weight) != 1.0 or float(unchanged_weight) != 1.0
+    ):
         if current_codes is None and current_images is not None:
             current_images = current_images.to(
                 device=vision_param.device,
@@ -1076,13 +1090,25 @@ def compute_visual_cot_loss(
                     f"current_codes shape {tuple(current_codes.shape)} does not match "
                     f"subgoal_codes shape {tuple(subgoal_codes.shape)}"
                 )
-            changed_positions = current_codes.to(subgoal_codes.device).ne(subgoal_codes).any(dim=-1)
-            weights = torch.ones_like(per_token_loss)
-            weights = torch.where(
-                changed_positions.unsqueeze(-1),
-                torch.full_like(weights, float(change_weight)),
-                weights,
-            )
+            code_changed = current_codes.to(subgoal_codes.device).ne(subgoal_codes)
+            mode = str(change_weight_mode).lower()
+            if mode == "binary":
+                changed_positions = code_changed.any(dim=-1)
+                patch_weights = torch.where(
+                    changed_positions,
+                    torch.full_like(changed_positions.float(), float(change_weight)),
+                    torch.full_like(changed_positions.float(), float(unchanged_weight)),
+                )
+            elif mode == "dynamic":
+                change_intensity = code_changed.float().mean(dim=-1)
+                patch_weights = (
+                    float(unchanged_weight)
+                    + change_intensity * (float(change_weight) - float(unchanged_weight))
+                )
+            else:
+                raise ValueError(f"Unsupported visual_change_weight_mode: {change_weight_mode}")
+
+            weights = patch_weights.unsqueeze(-1).expand_as(per_token_loss)
             return (per_token_loss * weights).sum() / weights.sum().clamp_min(1.0)
 
     return per_token_loss.mean()
@@ -1274,6 +1300,8 @@ def train():
     config.visual_loss_weight = action_args.visual_loss_weight
     config.use_visual_change_weight = action_args.use_visual_change_weight
     config.visual_change_weight = action_args.visual_change_weight
+    config.visual_change_weight_mode = action_args.visual_change_weight_mode
+    config.visual_unchanged_weight = action_args.visual_unchanged_weight
     config.action_loss_weight = action_args.action_loss_weight
     config.xyz_loss_weight = action_args.xyz_loss_weight
     config.gripper_close_loss_weight = action_args.gripper_close_loss_weight
