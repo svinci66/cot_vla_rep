@@ -583,6 +583,7 @@ class ActionPredictionTrainer(VILAUTrainer):
                     action_loss = (action_loss * token_weights).sum() / token_weights.sum().clamp_min(1.0)
                 loss = action_loss * float(getattr(core_model.config, "action_loss_weight", 1.0))
                 visual_loss = None
+                visual_loss_stats = {}
                 if (
                     getattr(core_model.config, "use_visual_cot_loss", False)
                     and subgoal_prediction_mask is not None
@@ -604,12 +605,16 @@ class ActionPredictionTrainer(VILAUTrainer):
                         change_weight=float(getattr(core_model.config, "visual_change_weight", 2.0)),
                         change_weight_mode=getattr(core_model.config, "visual_change_weight_mode", "binary"),
                         unchanged_weight=float(getattr(core_model.config, "visual_unchanged_weight", 1.0)),
+                        return_stats=return_outputs,
                     )
+                    if return_outputs and isinstance(visual_loss, tuple):
+                        visual_loss, visual_loss_stats = visual_loss
                     loss = loss + visual_loss * float(getattr(core_model.config, "visual_loss_weight", 1.0))
                 if return_outputs:
                     output = {"logits": action_logits, "action_loss": action_loss}
                     if visual_loss is not None:
                         output["visual_loss"] = visual_loss
+                        output.update(visual_loss_stats)
                     return loss, output
                 return loss
 
@@ -1035,7 +1040,8 @@ def compute_visual_cot_loss(
     change_weight: float = 2.0,
     change_weight_mode: str = "binary",
     unchanged_weight: float = 1.0,
-) -> torch.Tensor:
+    return_stats: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
     vision_tower = core_model.get_vision_tower()
     vision_model = vision_tower.vision_tower
     rqvae = vision_model.rqvaesiglip
@@ -1109,9 +1115,24 @@ def compute_visual_cot_loss(
                 raise ValueError(f"Unsupported visual_change_weight_mode: {change_weight_mode}")
 
             weights = patch_weights.unsqueeze(-1).expand_as(per_token_loss)
-            return (per_token_loss * weights).sum() / weights.sum().clamp_min(1.0)
+            visual_loss = (per_token_loss * weights).sum() / weights.sum().clamp_min(1.0)
+            if return_stats:
+                changed_positions = code_changed.any(dim=-1)
+                changed_weight_sum = patch_weights[changed_positions].sum()
+                stats = {
+                    "visual_changed_patch_ratio": changed_positions.float().mean().detach(),
+                    "visual_effective_changed_weight_ratio": (
+                        changed_weight_sum / patch_weights.sum().clamp_min(1.0)
+                    ).detach(),
+                    "visual_mean_patch_weight": patch_weights.mean().detach(),
+                }
+                return visual_loss, stats
+            return visual_loss
 
-    return per_token_loss.mean()
+    visual_loss = per_token_loss.mean()
+    if return_stats:
+        return visual_loss, {}
+    return visual_loss
 
 
 def compute_dataset_action_bin_edges(train_dataset, data_args: ActionPredictionArguments):

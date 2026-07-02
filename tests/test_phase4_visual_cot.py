@@ -286,7 +286,7 @@ def test_compute_visual_cot_loss_with_dynamic_change_weight():
     subgoal_images = torch.randn(1, 3, 8, 8)
     core_model = FakeCoreModel(FakeVisionTower(subgoal_codes, vocab_size))
 
-    loss = compute_visual_cot_loss(
+    loss, stats = compute_visual_cot_loss(
         core_model,
         subgoal_hidden_states,
         subgoal_images,
@@ -296,6 +296,7 @@ def test_compute_visual_cot_loss_with_dynamic_change_weight():
         change_weight=6.0,
         change_weight_mode="dynamic",
         unchanged_weight=0.5,
+        return_stats=True,
     )
 
     visual_logits = core_model.get_vision_tower().vision_tower.rqtransformer(
@@ -319,6 +320,14 @@ def test_compute_visual_cot_loss_with_dynamic_change_weight():
     expected_loss = (per_token_loss * weights).sum() / weights.sum()
 
     assert torch.allclose(loss, expected_loss)
+    changed_positions = code_changed.any(dim=-1)
+    expected_changed_weight_ratio = patch_weights[changed_positions].sum() / patch_weights.sum()
+    assert torch.allclose(stats["visual_changed_patch_ratio"], changed_positions.float().mean())
+    assert torch.allclose(
+        stats["visual_effective_changed_weight_ratio"],
+        expected_changed_weight_ratio,
+    )
+    assert torch.allclose(stats["visual_mean_patch_weight"], patch_weights.mean())
     print("✓ visual CoT dynamic change-aware CE weighting verified")
 
 
