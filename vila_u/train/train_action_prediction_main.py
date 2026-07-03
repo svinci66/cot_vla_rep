@@ -39,6 +39,7 @@ from vila_u.utils.action_tokenizer import (
     build_typed_action_slot_token_ids,
     compute_percentile_action_bin_edges,
     compute_selected_token_logits,
+    normalize_action_bin_edges,
     select_action_token_ids,
     token_ids_to_bins,
 )
@@ -1466,6 +1467,19 @@ def train():
         model.config.action_slot_token_ids = action_slot_token_ids
         model.config.action_slot_token_id = action_slot_token_ids["x"]
 
+    existing_action_bin_edges = None
+    if action_args.use_discrete_action_prediction and action_args.use_action_percentile_bins:
+        config_action_bin_edges = getattr(model.config, "action_bin_edges", None)
+        if config_action_bin_edges is not None:
+            existing_action_bin_edges = normalize_action_bin_edges(
+                config_action_bin_edges,
+                device="cpu",
+            )
+            print(
+                "reusing action percentile bins from checkpoint/config: "
+                f"shape={tuple(existing_action_bin_edges.shape)}"
+            )
+
     # Create data module for action prediction
     data_module = make_action_prediction_data_module(
         tokenizer=tokenizer,
@@ -1475,6 +1489,7 @@ def train():
         mm_use_im_start_end=data_args.mm_use_im_start_end,
         action_token_ids=action_token_ids,
         action_slot_token_ids=action_slot_token_ids,
+        action_bin_edges=existing_action_bin_edges,
     )
 
     action_bin_edges = data_module.pop("action_bin_edges", None)
