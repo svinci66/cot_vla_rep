@@ -153,6 +153,10 @@ class ActionPredictionArguments:
         default="binary",
         metadata={"help": "Visual change weighting mode: binary or dynamic"}
     )
+    visual_change_intensity_threshold: float = field(
+        default=0.0,
+        metadata={"help": "Minimum code-depth change intensity before dynamic visual CE upweighting"}
+    )
     visual_unchanged_weight: float = field(
         default=1.0,
         metadata={"help": "CE multiplier for unchanged visual-token positions when use_visual_change_weight=True"}
@@ -605,6 +609,9 @@ class ActionPredictionTrainer(VILAUTrainer):
                         use_change_weight=getattr(core_model.config, "use_visual_change_weight", False),
                         change_weight=float(getattr(core_model.config, "visual_change_weight", 2.0)),
                         change_weight_mode=getattr(core_model.config, "visual_change_weight_mode", "binary"),
+                        change_intensity_threshold=float(
+                            getattr(core_model.config, "visual_change_intensity_threshold", 0.0)
+                        ),
                         unchanged_weight=float(getattr(core_model.config, "visual_unchanged_weight", 1.0)),
                         return_stats=return_outputs,
                     )
@@ -1040,6 +1047,7 @@ def compute_visual_cot_loss(
     use_change_weight: bool = False,
     change_weight: float = 2.0,
     change_weight_mode: str = "binary",
+    change_intensity_threshold: float = 0.0,
     unchanged_weight: float = 1.0,
     return_stats: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -1106,11 +1114,21 @@ def compute_visual_cot_loss(
                     torch.full_like(changed_positions.float(), float(change_weight)),
                     torch.full_like(changed_positions.float(), float(unchanged_weight)),
                 )
+                raw_change_intensity = code_changed.float().mean(dim=-1)
+                effective_change_intensity = raw_change_intensity
             elif mode == "dynamic":
-                change_intensity = code_changed.float().mean(dim=-1)
+                raw_change_intensity = code_changed.float().mean(dim=-1)
+                threshold = float(change_intensity_threshold)
+                if threshold > 0.0:
+                    effective_change_intensity = (
+                        (raw_change_intensity - threshold)
+                        / max(1e-6, 1.0 - threshold)
+                    ).clamp(min=0.0, max=1.0)
+                else:
+                    effective_change_intensity = raw_change_intensity
                 patch_weights = (
                     float(unchanged_weight)
-                    + change_intensity * (float(change_weight) - float(unchanged_weight))
+                    + effective_change_intensity * (float(change_weight) - float(unchanged_weight))
                 )
             else:
                 raise ValueError(f"Unsupported visual_change_weight_mode: {change_weight_mode}")
@@ -1126,6 +1144,13 @@ def compute_visual_cot_loss(
                         changed_weight_sum / patch_weights.sum().clamp_min(1.0)
                     ).detach(),
                     "visual_mean_patch_weight": patch_weights.mean().detach(),
+                    "visual_mean_raw_change_intensity": raw_change_intensity.mean().detach(),
+                    "visual_mean_effective_change_intensity": (
+                        effective_change_intensity.mean().detach()
+                    ),
+                    "visual_thresholded_changed_patch_ratio": (
+                        effective_change_intensity.gt(0).float().mean().detach()
+                    ),
                 }
                 return visual_loss, stats
             return visual_loss
@@ -1323,6 +1348,7 @@ def train():
     config.use_visual_change_weight = action_args.use_visual_change_weight
     config.visual_change_weight = action_args.visual_change_weight
     config.visual_change_weight_mode = action_args.visual_change_weight_mode
+    config.visual_change_intensity_threshold = action_args.visual_change_intensity_threshold
     config.visual_unchanged_weight = action_args.visual_unchanged_weight
     config.action_loss_weight = action_args.action_loss_weight
     config.xyz_loss_weight = action_args.xyz_loss_weight

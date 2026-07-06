@@ -64,6 +64,7 @@ VISUAL_LOSS_WEIGHT=${VISUAL_LOSS_WEIGHT:-1.0}
 USE_VISUAL_CHANGE_WEIGHT=${USE_VISUAL_CHANGE_WEIGHT:-False}
 VISUAL_CHANGE_WEIGHT=${VISUAL_CHANGE_WEIGHT:-2.0}
 VISUAL_CHANGE_WEIGHT_MODE=${VISUAL_CHANGE_WEIGHT_MODE:-binary}
+VISUAL_CHANGE_INTENSITY_THRESHOLD=${VISUAL_CHANGE_INTENSITY_THRESHOLD:-0.0}
 VISUAL_UNCHANGED_WEIGHT=${VISUAL_UNCHANGED_WEIGHT:-1.0}
 ACTION_LOSS_WEIGHT=${ACTION_LOSS_WEIGHT:-1.0}
 XYZ_LOSS_WEIGHT=${XYZ_LOSS_WEIGHT:-1.0}
@@ -256,6 +257,7 @@ echo "  Visual Loss Weight: $VISUAL_LOSS_WEIGHT"
 echo "  Use Visual Change Weight: $USE_VISUAL_CHANGE_WEIGHT"
 echo "  Visual Change Weight Mode: $VISUAL_CHANGE_WEIGHT_MODE"
 echo "  Visual Change Weight: $VISUAL_CHANGE_WEIGHT"
+echo "  Visual Change Intensity Threshold: $VISUAL_CHANGE_INTENSITY_THRESHOLD"
 echo "  Visual Unchanged Weight: $VISUAL_UNCHANGED_WEIGHT"
 echo "  Action Loss Weight: $ACTION_LOSS_WEIGHT"
 echo "  XYZ Loss Weight: $XYZ_LOSS_WEIGHT"
@@ -324,6 +326,7 @@ train_args=(
     --use_visual_change_weight "$USE_VISUAL_CHANGE_WEIGHT"
     --visual_change_weight "$VISUAL_CHANGE_WEIGHT"
     --visual_change_weight_mode "$VISUAL_CHANGE_WEIGHT_MODE"
+    --visual_change_intensity_threshold "$VISUAL_CHANGE_INTENSITY_THRESHOLD"
     --visual_unchanged_weight "$VISUAL_UNCHANGED_WEIGHT"
     --action_loss_weight "$ACTION_LOSS_WEIGHT"
     --xyz_loss_weight "$XYZ_LOSS_WEIGHT"

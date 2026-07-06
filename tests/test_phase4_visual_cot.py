@@ -331,6 +331,71 @@ def test_compute_visual_cot_loss_with_dynamic_change_weight():
     print("✓ visual CoT dynamic change-aware CE weighting verified")
 
 
+def test_compute_visual_cot_loss_with_dynamic_change_threshold():
+    subgoal_codes = torch.tensor(
+        [[[[0, 1, 2, 3], [4, 5, 6, 7]], [[8, 9, 10, 11], [12, 13, 14, 15]]]],
+        dtype=torch.long,
+    )
+    current_codes = torch.tensor(
+        [[[[0, 1, 2, 3], [16, 5, 6, 7]], [[17, 18, 10, 11], [19, 20, 21, 22]]]],
+        dtype=torch.long,
+    )
+    image_tokens = 4
+    depth = 4
+    vocab_size = 32
+    hidden_size = 6
+    subgoal_hidden_states = torch.randn(1, image_tokens, hidden_size)
+    subgoal_images = torch.randn(1, 3, 8, 8)
+    core_model = FakeCoreModel(FakeVisionTower(subgoal_codes, vocab_size))
+
+    loss, stats = compute_visual_cot_loss(
+        core_model,
+        subgoal_hidden_states,
+        subgoal_images,
+        subgoal_codes=subgoal_codes.reshape(1, image_tokens, depth),
+        current_codes=current_codes.reshape(1, image_tokens, depth),
+        use_change_weight=True,
+        change_weight=6.0,
+        change_weight_mode="dynamic",
+        change_intensity_threshold=0.25,
+        unchanged_weight=0.5,
+        return_stats=True,
+    )
+
+    visual_logits = core_model.get_vision_tower().vision_tower.rqtransformer(
+        subgoal_hidden_states,
+        subgoal_codes.reshape(1, image_tokens, depth),
+        core_model.get_vision_tower().vision_tower.rqvaesiglip,
+    )
+    per_token_loss = torch.nn.functional.cross_entropy(
+        visual_logits.reshape(image_tokens * depth, vocab_size),
+        subgoal_codes.reshape(image_tokens * depth),
+        reduction="none",
+    ).view(1, image_tokens, depth)
+    code_changed = current_codes.reshape(1, image_tokens, depth).ne(
+        subgoal_codes.reshape(1, image_tokens, depth)
+    )
+    raw_intensity = code_changed.float().mean(dim=-1)
+    effective_intensity = ((raw_intensity - 0.25) / 0.75).clamp(min=0.0, max=1.0)
+    patch_weights = 0.5 + effective_intensity * (6.0 - 0.5)
+    expected_patch_weights = torch.tensor([[0.5, 0.5, 2.3333333, 6.0]])
+
+    assert torch.allclose(patch_weights, expected_patch_weights)
+    weights = patch_weights.unsqueeze(-1).expand_as(per_token_loss)
+    expected_loss = (per_token_loss * weights).sum() / weights.sum()
+    assert torch.allclose(loss, expected_loss)
+    assert torch.allclose(stats["visual_mean_raw_change_intensity"], raw_intensity.mean())
+    assert torch.allclose(
+        stats["visual_mean_effective_change_intensity"],
+        effective_intensity.mean(),
+    )
+    assert torch.allclose(
+        stats["visual_thresholded_changed_patch_ratio"],
+        effective_intensity.gt(0).float().mean(),
+    )
+    print("✓ visual CoT dynamic change threshold verified")
+
+
 def test_dynamic_patch_weight_formula_covers_depth_counts():
     code_changed = torch.tensor(
         [
@@ -464,6 +529,7 @@ if __name__ == "__main__":
     test_compute_visual_cot_loss_with_offset_codes()
     test_compute_visual_cot_loss_with_change_weight()
     test_compute_visual_cot_loss_with_dynamic_change_weight()
+    test_compute_visual_cot_loss_with_dynamic_change_threshold()
     test_dynamic_patch_weight_formula_covers_depth_counts()
     test_depth_transformer_can_be_trainable_independently()
     test_visual_cot_loss_updates_rqtransformer_parameters()
