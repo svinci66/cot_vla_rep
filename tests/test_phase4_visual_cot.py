@@ -1,5 +1,6 @@
 """Phase 4 Visual CoT lightweight tests."""
 
+import math
 import os
 import sys
 
@@ -9,10 +10,17 @@ sys.path.insert(0, project_root)
 
 import torch
 
+from scripts.eval_oracle_subgoal_action_ablation_offline import (
+    comparison_summary,
+    parse_modes,
+    result_mode_name,
+    select_wrong_subgoal_indices,
+)
 from vila_u.constants import IGNORE_INDEX
 from vila_u.train.train_action_prediction_main import (
     compute_visual_cot_loss,
     insert_subgoal_embeds_before_action_block,
+    validate_visual_change_weighting,
 )
 from vila_u.utils.hybrid_attention import build_causal_attention_mask
 
@@ -396,6 +404,70 @@ def test_compute_visual_cot_loss_with_dynamic_change_threshold():
     print("✓ visual CoT dynamic change threshold verified")
 
 
+def test_visual_change_weighting_validation():
+    assert validate_visual_change_weighting("DYNAMIC", 0.25) == ("dynamic", 0.25)
+    assert validate_visual_change_weighting("binary", 0.0) == ("binary", 0.0)
+
+    for mode, threshold in (
+        ("unsupported", 0.0),
+        ("dynamic", -0.1),
+        ("dynamic", 1.0),
+        ("dynamic", math.inf),
+        ("dynamic", math.nan),
+    ):
+        try:
+            validate_visual_change_weighting(mode, threshold)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"Expected invalid visual change configuration to fail: {mode=}, {threshold=}"
+            )
+    print("✓ visual change weighting validation verified")
+
+
+def test_oracle_ablation_modes_follow_configured_offset():
+    assert parse_modes("no_subgoal,oracle,wrong") == ["no_subgoal", "oracle", "wrong"]
+    assert parse_modes("oracle_t10,wrong_t10,oracle") == ["oracle", "wrong"]
+    assert result_mode_name("oracle", 5) == "oracle_t5"
+    assert result_mode_name("wrong", 5) == "wrong_t5"
+
+    summaries = {
+        "oracle_t5": {"mae": 0.1},
+        "wrong_t5": {"mae": 0.2},
+        "no_subgoal": {"mae": 0.3},
+    }
+    comparisons = comparison_summary(summaries, subgoal_offset=5)
+    assert comparisons["oracle_t5_minus_wrong_t5"]["mae"] < 0
+    assert comparisons["oracle_t5_minus_no_subgoal"]["mae_improved"]
+    print("✓ oracle ablation mode labels follow configured offset")
+
+
+def test_wrong_subgoal_selection_avoids_same_demo():
+    samples = [
+        {"file": "task_a.hdf5", "demo": "demo_0"},
+        {"file": "task_a.hdf5", "demo": "demo_0"},
+        {"file": "task_a.hdf5", "demo": "demo_1"},
+        {"file": "task_b.hdf5", "demo": "demo_0"},
+        {"file": "task_b.hdf5", "demo": "demo_1"},
+    ]
+    wrong_indices = select_wrong_subgoal_indices(samples, [0, 1, 3], shift=1)
+    for selected_index, wrong_index in zip([0, 1, 3], wrong_indices):
+        assert samples[wrong_index]["file"] != samples[selected_index]["file"]
+
+    one_task_samples = samples[:3]
+    fallback_index = select_wrong_subgoal_indices(one_task_samples, [0], shift=0)[0]
+    assert one_task_samples[fallback_index]["demo"] != one_task_samples[0]["demo"]
+
+    try:
+        select_wrong_subgoal_indices(one_task_samples[:2], [0], shift=0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected same-demo-only negative selection to fail")
+    print("✓ wrong subgoal selection avoids the source demonstration")
+
+
 def test_dynamic_patch_weight_formula_covers_depth_counts():
     code_changed = torch.tensor(
         [
@@ -530,6 +602,9 @@ if __name__ == "__main__":
     test_compute_visual_cot_loss_with_change_weight()
     test_compute_visual_cot_loss_with_dynamic_change_weight()
     test_compute_visual_cot_loss_with_dynamic_change_threshold()
+    test_visual_change_weighting_validation()
+    test_oracle_ablation_modes_follow_configured_offset()
+    test_wrong_subgoal_selection_avoids_same_demo()
     test_dynamic_patch_weight_formula_covers_depth_counts()
     test_depth_transformer_can_be_trainable_independently()
     test_visual_cot_loss_updates_rqtransformer_parameters()

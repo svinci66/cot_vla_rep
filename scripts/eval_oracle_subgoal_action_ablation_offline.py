@@ -4,8 +4,8 @@
 Evaluates the same selected LIBERO samples under three input modes:
 
 - no_subgoal: current observation + instruction only
-- oracle_t10: current observation + correct GT future image
-- wrong_t10: current observation + mismatched GT future image
+- oracle: current observation + correct GT future image at the configured offset
+- wrong: current observation + a GT future image from another task or demo
 """
 
 from __future__ import annotations
@@ -56,20 +56,77 @@ from vila_u.utils.hybrid_attention import (  # noqa: E402
 )
 
 
-VALID_MODES = ("no_subgoal", "oracle_t10", "wrong_t10")
+VALID_MODES = ("no_subgoal", "oracle", "wrong")
+MODE_ALIASES = {
+    "oracle_t10": "oracle",
+    "wrong_t10": "wrong",
+}
 LOWER_IS_BETTER = {"mae", "mse", "first_step_mae", "gripper_mae", "gripper_mse"}
 
 
 def parse_modes(value: str) -> list[str]:
-    modes = [item.strip() for item in value.split(",") if item.strip()]
-    unknown = [mode for mode in modes if mode not in VALID_MODES]
+    requested_modes = [item.strip() for item in value.split(",") if item.strip()]
+    unknown = [
+        mode
+        for mode in requested_modes
+        if mode not in VALID_MODES and mode not in MODE_ALIASES
+    ]
     if unknown:
         raise argparse.ArgumentTypeError(
             f"Unknown mode(s): {unknown}. Valid modes: {', '.join(VALID_MODES)}"
         )
-    if not modes:
+    if not requested_modes:
         raise argparse.ArgumentTypeError("At least one mode is required")
+
+    modes = []
+    for requested_mode in requested_modes:
+        mode = MODE_ALIASES.get(requested_mode, requested_mode)
+        if mode not in modes:
+            modes.append(mode)
     return modes
+
+
+def result_mode_name(mode: str, subgoal_offset: int) -> str:
+    if mode == "no_subgoal":
+        return mode
+    if mode in {"oracle", "wrong"}:
+        return f"{mode}_t{subgoal_offset}"
+    raise ValueError(f"Unsupported mode: {mode}")
+
+
+def select_wrong_subgoal_indices(
+    samples: list[dict[str, Any]],
+    selected_indices: list[int],
+    shift: int,
+) -> list[int]:
+    """Choose deterministic negatives from another task, or at least another demo."""
+    all_indices = list(range(len(samples)))
+    wrong_indices = []
+    for selected_position, sample_index in enumerate(selected_indices):
+        sample = samples[sample_index]
+        different_task = [
+            index
+            for index in all_indices
+            if samples[index]["file"] != sample["file"]
+        ]
+        different_demo = [
+            index
+            for index in all_indices
+            if (
+                samples[index]["file"],
+                samples[index]["demo"],
+            )
+            != (sample["file"], sample["demo"])
+        ]
+        candidates = different_task or different_demo
+        if not candidates:
+            raise ValueError(
+                "wrong mode requires at least two task files or demonstrations; "
+                f"no negative subgoal exists for {sample['file']}::{sample['demo']}"
+            )
+        candidate_position = (selected_position + int(shift)) % len(candidates)
+        wrong_indices.append(candidates[candidate_position])
+    return wrong_indices
 
 
 def clone_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -290,9 +347,13 @@ def build_mode_items(
 ) -> list[dict[str, Any]]:
     if mode == "no_subgoal":
         return [without_subgoal(item) for item in batch_items]
-    if mode == "oracle_t10":
+    if mode == "oracle":
         return [clone_item(item) for item in batch_items]
-    if mode == "wrong_t10":
+    if mode == "wrong":
+        if len(wrong_items) != len(batch_items):
+            raise ValueError(
+                "wrong mode requires one negative subgoal for every evaluated sample"
+            )
         return [
             with_wrong_subgoal(item, wrong_item)
             for item, wrong_item in zip(batch_items, wrong_items)
@@ -300,12 +361,17 @@ def build_mode_items(
     raise ValueError(f"Unsupported mode: {mode}")
 
 
-def comparison_summary(summaries: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def comparison_summary(
+    summaries: dict[str, dict[str, Any]],
+    subgoal_offset: int,
+) -> dict[str, dict[str, Any]]:
     comparisons: dict[str, dict[str, Any]] = {}
+    oracle_mode = result_mode_name("oracle", subgoal_offset)
+    wrong_mode = result_mode_name("wrong", subgoal_offset)
     pairs = [
-        ("oracle_t10", "wrong_t10"),
-        ("oracle_t10", "no_subgoal"),
-        ("wrong_t10", "no_subgoal"),
+        (oracle_mode, wrong_mode),
+        (oracle_mode, "no_subgoal"),
+        (wrong_mode, "no_subgoal"),
     ]
     metric_names = sorted({key for summary in summaries.values() for key in summary.keys()})
     for left, right in pairs:
@@ -345,12 +411,24 @@ def main() -> None:
     parser.add_argument("--max-task-files", type=int, default=None)
     parser.add_argument("--max-demos-per-task", type=int, default=None)
     parser.add_argument("--subgoal-offset", type=int, default=10)
-    parser.add_argument("--modes", type=parse_modes, default=list(VALID_MODES))
-    parser.add_argument("--wrong-shift", type=int, default=None)
+    parser.add_argument(
+        "--modes",
+        type=parse_modes,
+        default=list(VALID_MODES),
+        help="Comma-separated no_subgoal,oracle,wrong modes (legacy t10 aliases are accepted).",
+    )
+    parser.add_argument(
+        "--wrong-shift",
+        type=int,
+        default=None,
+        help="Deterministic offset within the eligible cross-task/cross-demo negative pool.",
+    )
     parser.add_argument("--recompute-action-bin-edges", action="store_true")
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--save-records", action="store_true")
     args = parser.parse_args()
+    if args.subgoal_offset < 1:
+        parser.error("--subgoal-offset must be at least 1")
 
     dtype_map = {
         "float16": torch.float16,
@@ -408,12 +486,18 @@ def main() -> None:
     if eval_count <= 0:
         raise ValueError("No samples available for evaluation")
     selected_indices = list(range(eval_count))
-    if "wrong_t10" in args.modes and eval_count < 2:
-        raise ValueError("wrong_t10 mode requires at least two selected samples")
-
     wrong_shift = int(args.wrong_shift if args.wrong_shift is not None else max(1, eval_count // 2))
-    if eval_count > 1 and wrong_shift % eval_count == 0:
-        wrong_shift = 1
+    selected_wrong_indices = []
+    if "wrong" in args.modes:
+        selected_wrong_indices = select_wrong_subgoal_indices(
+            dataset.samples,
+            selected_indices,
+            wrong_shift,
+        )
+    mode_names = {
+        mode: result_mode_name(mode, args.subgoal_offset)
+        for mode in args.modes
+    }
 
     action_bin_edges = normalize_action_bin_edges(
         getattr(model.config, "action_bin_edges", None),
@@ -463,7 +547,7 @@ def main() -> None:
     print(f"Resolved model path: {resolved_model_path}")
     print(f"Data root: {args.data_root}")
     print(f"Eval samples: {eval_count}/{len(dataset)}")
-    print(f"Modes: {', '.join(args.modes)}")
+    print(f"Modes: {', '.join(mode_names.values())}")
     print(f"Subgoal offset: {args.subgoal_offset}")
     print(f"Wrong shift: {wrong_shift}")
     print(f"Task file: {args.task_file}")
@@ -476,10 +560,7 @@ def main() -> None:
     processed = 0
     for batch_items in tqdm(dataloader, total=len(dataloader)):
         cur_indices = selected_indices[processed : processed + len(batch_items)]
-        wrong_indices = [
-            selected_indices[(processed + item_offset + wrong_shift) % eval_count]
-            for item_offset in range(len(batch_items))
-        ]
+        wrong_indices = selected_wrong_indices[processed : processed + len(batch_items)]
         wrong_items = [dataset[index] for index in wrong_indices]
 
         for mode in args.modes:
@@ -509,7 +590,7 @@ def main() -> None:
                 for item_offset, sample_index in enumerate(cur_indices):
                     sample = dataset.samples[sample_index]
                     record = {
-                        "mode": mode,
+                        "mode": mode_names[mode],
                         "index": sample_index,
                         "file": sample["file"],
                         "demo": sample["demo"],
@@ -525,13 +606,19 @@ def main() -> None:
                         "pred_bins": pred_bins_np[item_offset],
                         "gt_bins": gt_bins_np[item_offset],
                     }
-                    if mode == "wrong_t10":
+                    if mode == "wrong":
                         record["wrong_index"] = int(wrong_indices[item_offset])
+                        wrong_sample = dataset.samples[wrong_indices[item_offset]]
+                        record["wrong_file"] = wrong_sample["file"]
+                        record["wrong_demo"] = wrong_sample["demo"]
                     records.append(record)
         processed += len(batch_items)
 
-    summaries = {mode: summarize_metrics(store) for mode, store in metrics.items()}
-    comparisons = comparison_summary(summaries)
+    summaries = {
+        mode_names[mode]: summarize_metrics(store)
+        for mode, store in metrics.items()
+    }
+    comparisons = comparison_summary(summaries, args.subgoal_offset)
     output = {
         "summary": summaries,
         "comparisons": comparisons,
@@ -543,8 +630,10 @@ def main() -> None:
             "max_task_files": args.max_task_files,
             "max_demos_per_task": args.max_demos_per_task,
             "max_samples": args.max_samples,
+            "modes": list(mode_names.values()),
             "subgoal_offset": args.subgoal_offset,
             "wrong_shift": wrong_shift,
+            "wrong_subgoal_pairing": "different_task_preferred_other_demo_required",
             "remove_pause_intervals": args.remove_pause_intervals,
             "pause_threshold": args.pause_threshold,
             "gripper_pause_threshold": args.gripper_pause_threshold,
@@ -564,9 +653,10 @@ def main() -> None:
         "gripper_transition_change_recall",
     ]
     for mode in args.modes:
-        print(f"  [{mode}]")
+        mode_name = mode_names[mode]
+        print(f"  [{mode_name}]")
         for metric in key_metrics:
-            print(f"    {metric} = {summaries[mode].get(metric)}")
+            print(f"    {metric} = {summaries[mode_name].get(metric)}")
     if comparisons:
         print("Comparisons")
         for name, values in comparisons.items():

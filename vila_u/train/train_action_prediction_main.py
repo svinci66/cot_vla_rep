@@ -4,6 +4,7 @@ Based on VILA-U's train.py framework with action prediction support
 """
 
 import logging
+import math
 import os
 import pathlib
 import shutil
@@ -61,6 +62,27 @@ def env_flag(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.lower() in {"1", "true", "yes", "on"}
+
+
+def validate_visual_change_weighting(
+    change_weight_mode: str,
+    change_intensity_threshold: float,
+) -> tuple[str, float]:
+    """Validate and normalize visual change-weighting configuration."""
+    mode = str(change_weight_mode).lower()
+    if mode not in {"binary", "dynamic"}:
+        raise ValueError(
+            "visual_change_weight_mode must be either 'binary' or 'dynamic', "
+            f"got {change_weight_mode!r}"
+        )
+
+    threshold = float(change_intensity_threshold)
+    if not math.isfinite(threshold) or not 0.0 <= threshold < 1.0:
+        raise ValueError(
+            "visual_change_intensity_threshold must be finite and in [0.0, 1.0), "
+            f"got {change_intensity_threshold!r}"
+        )
+    return mode, threshold
 
 
 @dataclass
@@ -1051,6 +1073,17 @@ def compute_visual_cot_loss(
     unchanged_weight: float = 1.0,
     return_stats: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    normalized_change_weight_mode = str(change_weight_mode).lower()
+    normalized_change_intensity_threshold = float(change_intensity_threshold)
+    if use_change_weight:
+        (
+            normalized_change_weight_mode,
+            normalized_change_intensity_threshold,
+        ) = validate_visual_change_weighting(
+            change_weight_mode,
+            change_intensity_threshold,
+        )
+
     vision_tower = core_model.get_vision_tower()
     vision_model = vision_tower.vision_tower
     rqvae = vision_model.rqvaesiglip
@@ -1106,7 +1139,7 @@ def compute_visual_cot_loss(
                     f"subgoal_codes shape {tuple(subgoal_codes.shape)}"
                 )
             code_changed = current_codes.to(subgoal_codes.device).ne(subgoal_codes)
-            mode = str(change_weight_mode).lower()
+            mode = normalized_change_weight_mode
             if mode == "binary":
                 changed_positions = code_changed.any(dim=-1)
                 patch_weights = torch.where(
@@ -1118,7 +1151,7 @@ def compute_visual_cot_loss(
                 effective_change_intensity = raw_change_intensity
             elif mode == "dynamic":
                 raw_change_intensity = code_changed.float().mean(dim=-1)
-                threshold = float(change_intensity_threshold)
+                threshold = normalized_change_intensity_threshold
                 if threshold > 0.0:
                     effective_change_intensity = (
                         (raw_change_intensity - threshold)
@@ -1334,6 +1367,13 @@ def train():
         raise ValueError("Phase 4 Visual CoT requires hybrid attention for action slots")
     if action_args.use_visual_cot_loss and not action_args.use_visual_cot:
         raise ValueError("Visual CoT loss requires use_visual_cot=True")
+    (
+        action_args.visual_change_weight_mode,
+        action_args.visual_change_intensity_threshold,
+    ) = validate_visual_change_weighting(
+        action_args.visual_change_weight_mode,
+        action_args.visual_change_intensity_threshold,
+    )
 
     # Enable action prediction
     config.use_discrete_action_prediction = action_args.use_discrete_action_prediction
