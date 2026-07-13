@@ -85,6 +85,40 @@ def validate_visual_change_weighting(
     return mode, threshold
 
 
+def resolve_checkpoint_action_bin_edges(config, action_args):
+    """Return checkpoint bin edges and optionally require exact reuse."""
+    if not (
+        action_args.use_discrete_action_prediction
+        and action_args.use_action_percentile_bins
+    ):
+        return None
+
+    config_action_bin_edges = getattr(config, "action_bin_edges", None)
+    if config_action_bin_edges is None:
+        if action_args.require_checkpoint_action_bin_edges:
+            raise ValueError(
+                "Experiment requires action_bin_edges from the checkpoint/config; "
+                "refusing to recompute them from the selected demo split"
+            )
+        return None
+
+    action_bin_edges = normalize_action_bin_edges(
+        config_action_bin_edges,
+        device="cpu",
+    )
+    expected_shape = (int(action_args.action_dim), ACTION_NUM_BINS + 1)
+    if tuple(action_bin_edges.shape) != expected_shape:
+        raise ValueError(
+            "Checkpoint action_bin_edges have the wrong shape: "
+            f"expected={expected_shape}, got={tuple(action_bin_edges.shape)}"
+        )
+    print(
+        "reusing action percentile bins from checkpoint/config: "
+        f"shape={tuple(action_bin_edges.shape)}"
+    )
+    return action_bin_edges
+
+
 @dataclass
 class ActionPredictionArguments:
     """Arguments for action prediction training"""
@@ -118,6 +152,14 @@ class ActionPredictionArguments:
     max_demos_per_task: Optional[int] = field(
         default=None,
         metadata={"help": "Limit the number of demonstrations per task file for small overfit/debug runs"}
+    )
+    demo_start_index: int = field(
+        default=0,
+        metadata={"help": "Inclusive numeric demonstration index"}
+    )
+    demo_end_index: Optional[int] = field(
+        default=None,
+        metadata={"help": "Exclusive numeric demonstration index"}
     )
     task_file: Optional[str] = field(
         default=None,
@@ -203,6 +245,10 @@ class ActionPredictionArguments:
         default=False,
         metadata={"help": "Use per-dimension action bin edges from training-set percentiles"}
     )
+    require_checkpoint_action_bin_edges: bool = field(
+        default=False,
+        metadata={"help": "Require action bin edges to come from the loaded checkpoint/config"}
+    )
     action_bin_low_percentile: float = field(
         default=1.0,
         metadata={"help": "Lower percentile for per-dimension action bin edges"}
@@ -259,6 +305,11 @@ class ActionPredictionDataCollator:
                 [item["subgoal_timestep"] for item in batch],
                 dtype=torch.long,
             )
+            if "subgoal_filtered_timestep" in batch[0]:
+                output["subgoal_filtered_timesteps"] = torch.tensor(
+                    [item["subgoal_filtered_timestep"] for item in batch],
+                    dtype=torch.long,
+                )
         return output
 
 
@@ -358,6 +409,11 @@ class DiscreteActionPredictionDataCollator:
                 [item["subgoal_timestep"] for item in batch],
                 dtype=torch.long,
             )
+            if "subgoal_filtered_timestep" in batch[0]:
+                output["subgoal_filtered_timesteps"] = torch.tensor(
+                    [item["subgoal_filtered_timestep"] for item in batch],
+                    dtype=torch.long,
+                )
         return output
 
 
@@ -1273,6 +1329,8 @@ def make_action_prediction_data_module(
         subgoal_sampling_strategy=data_args.subgoal_sampling_strategy,
         max_task_files=data_args.max_task_files,
         max_demos_per_task=data_args.max_demos_per_task,
+        demo_start_index=data_args.demo_start_index,
+        demo_end_index=data_args.demo_end_index,
         task_file=data_args.task_file,
         task_file_pattern=data_args.task_file_pattern,
         gripper_pause_threshold=data_args.gripper_pause_threshold,
@@ -1398,8 +1456,11 @@ def train():
     config.action_chunk_size = action_args.action_chunk_size
     config.action_num_bins = ACTION_NUM_BINS
     config.use_action_percentile_bins = action_args.use_action_percentile_bins
+    config.require_checkpoint_action_bin_edges = action_args.require_checkpoint_action_bin_edges
     config.action_bin_low_percentile = action_args.action_bin_low_percentile
     config.action_bin_high_percentile = action_args.action_bin_high_percentile
+    config.demo_start_index = action_args.demo_start_index
+    config.demo_end_index = action_args.demo_end_index
     config.tune_depth_transformer = action_args.tune_depth_transformer
     attn_implementation = os.environ.get("ATTN_IMPLEMENTATION", "flash_attention_2")
     if action_args.use_hybrid_attention and attn_implementation == "flash_attention_2":
@@ -1533,18 +1594,10 @@ def train():
         model.config.action_slot_token_ids = action_slot_token_ids
         model.config.action_slot_token_id = action_slot_token_ids["x"]
 
-    existing_action_bin_edges = None
-    if action_args.use_discrete_action_prediction and action_args.use_action_percentile_bins:
-        config_action_bin_edges = getattr(model.config, "action_bin_edges", None)
-        if config_action_bin_edges is not None:
-            existing_action_bin_edges = normalize_action_bin_edges(
-                config_action_bin_edges,
-                device="cpu",
-            )
-            print(
-                "reusing action percentile bins from checkpoint/config: "
-                f"shape={tuple(existing_action_bin_edges.shape)}"
-            )
+    existing_action_bin_edges = resolve_checkpoint_action_bin_edges(
+        model.config,
+        action_args,
+    )
 
     # Create data module for action prediction
     data_module = make_action_prediction_data_module(

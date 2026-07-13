@@ -3,6 +3,7 @@
 import math
 import os
 import sys
+from types import SimpleNamespace
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
@@ -11,15 +12,21 @@ sys.path.insert(0, project_root)
 import torch
 
 from scripts.eval_oracle_subgoal_action_ablation_offline import (
+    VALID_MODES,
+    build_mode_items,
     comparison_summary,
     parse_modes,
-    result_mode_name,
-    select_wrong_subgoal_indices,
+    predict_training_batch_with_optional_subgoal,
+    select_balanced_sample_indices,
+    select_negative_subgoal_indices,
+    validate_prediction_outputs,
 )
-from vila_u.constants import IGNORE_INDEX
+from vila_u.constants import ACTION_NUM_BINS, IGNORE_INDEX
+from vila_u.model.configuration_vila_u import VILAUConfig
 from vila_u.train.train_action_prediction_main import (
     compute_visual_cot_loss,
     insert_subgoal_embeds_before_action_block,
+    resolve_checkpoint_action_bin_edges,
     validate_visual_change_weighting,
 )
 from vila_u.utils.hybrid_attention import build_causal_attention_mask
@@ -118,7 +125,12 @@ def test_subgoal_timestep_uses_filtered_action_offset():
     assert dataset._sample_subgoal_timestep(sample) == 35
 
     dataset.subgoal_max_offset = 10
-    assert dataset._sample_subgoal_timestep(sample) == 35
+    try:
+        dataset._sample_subgoal_timestep(sample)
+    except IndexError:
+        pass
+    else:
+        raise AssertionError("Subgoal sampling must not clamp to the final frame")
 
     dataset.remove_pause_intervals = False
     dataset.subgoal_max_offset = 2
@@ -426,46 +438,220 @@ def test_visual_change_weighting_validation():
     print("✓ visual change weighting validation verified")
 
 
-def test_oracle_ablation_modes_follow_configured_offset():
-    assert parse_modes("no_subgoal,oracle,wrong") == ["no_subgoal", "oracle", "wrong"]
-    assert parse_modes("oracle_t10,wrong_t10,oracle") == ["oracle", "wrong"]
-    assert result_mode_name("oracle", 5) == "oracle_t5"
-    assert result_mode_name("wrong", 5) == "wrong_t5"
+def test_oracle_ablation_modes_and_action_labels():
+    assert parse_modes(",".join(VALID_MODES)) == list(VALID_MODES)
+    assert parse_modes("oracle,wrong") == ["oracle_t10", "cross_task_wrong_t10"]
 
-    summaries = {
-        "oracle_t5": {"mae": 0.1},
-        "wrong_t5": {"mae": 0.2},
-        "no_subgoal": {"mae": 0.3},
+    action_labels = torch.randn(10, 7)
+    observation = torch.randn(3, 8, 8)
+    oracle = torch.randn(3, 8, 8)
+    source_item = {
+        "observations": observation,
+        "subgoal_images": oracle,
+        "subgoal_timestep": 20,
+        "subgoal_filtered_timestep": 10,
+        "action_labels": action_labels,
+        "timestep": 2,
+        "filtered_timestep": 0,
     }
-    comparisons = comparison_summary(summaries, subgoal_offset=5)
-    assert comparisons["oracle_t5_minus_wrong_t5"]["mae"] < 0
-    assert comparisons["oracle_t5_minus_no_subgoal"]["mae_improved"]
-    print("✓ oracle ablation mode labels follow configured offset")
+    same_negative = {
+        "subgoal_images": torch.randn(3, 8, 8),
+        "subgoal_timestep": 40,
+        "subgoal_filtered_timestep": 30,
+    }
+    cross_negative = {
+        "subgoal_images": torch.randn(3, 8, 8),
+        "subgoal_timestep": 50,
+        "subgoal_filtered_timestep": 35,
+    }
+    for mode in VALID_MODES:
+        mode_item = build_mode_items(
+            mode,
+            [source_item],
+            [same_negative],
+            [cross_negative],
+        )[0]
+        assert torch.equal(mode_item["action_labels"], action_labels)
+        if mode == "no_subgoal":
+            assert "subgoal_images" not in mode_item
+        elif mode == "current_copy":
+            assert torch.equal(mode_item["subgoal_images"], observation)
+
+    summaries = {mode: {"mae": index / 10.0} for index, mode in enumerate(VALID_MODES)}
+    comparisons = comparison_summary(summaries)
+    assert "oracle_t10_minus_cross_task_wrong_t10" in comparisons
+    print("✓ five ablation modes preserve action labels and current_copy pixels")
 
 
-def test_wrong_subgoal_selection_avoids_same_demo():
-    samples = [
-        {"file": "task_a.hdf5", "demo": "demo_0"},
-        {"file": "task_a.hdf5", "demo": "demo_0"},
-        {"file": "task_a.hdf5", "demo": "demo_1"},
-        {"file": "task_b.hdf5", "demo": "demo_0"},
-        {"file": "task_b.hdf5", "demo": "demo_1"},
+def test_strong_negative_selection_and_balanced_samples():
+    source_samples = [
+        {"file": "task_a.hdf5", "demo": "demo_40", "filtered_timestep": 5},
+        {"file": "task_b.hdf5", "demo": "demo_40", "filtered_timestep": 7},
     ]
-    wrong_indices = select_wrong_subgoal_indices(samples, [0, 1, 3], shift=1)
-    for selected_index, wrong_index in zip([0, 1, 3], wrong_indices):
-        assert samples[wrong_index]["file"] != samples[selected_index]["file"]
+    negative_samples = [
+        {"file": "task_a.hdf5", "demo": "demo_41", "filtered_timestep": 10},
+        {"file": "task_a.hdf5", "demo": "demo_42", "filtered_timestep": 30},
+        {"file": "task_b.hdf5", "demo": "demo_41", "filtered_timestep": 8},
+        {"file": "task_c.hdf5", "demo": "demo_40", "filtered_timestep": 5},
+    ]
+    same_index = select_negative_subgoal_indices(
+        source_samples,
+        [0],
+        negative_samples,
+        selection="same_task",
+        seed=0,
+        same_task_min_filtered_distance=20,
+    )[0]
+    assert negative_samples[same_index]["file"] == source_samples[0]["file"]
+    assert negative_samples[same_index]["demo"] != source_samples[0]["demo"]
+    assert abs(negative_samples[same_index]["filtered_timestep"] - 5) >= 20
 
-    one_task_samples = samples[:3]
-    fallback_index = select_wrong_subgoal_indices(one_task_samples, [0], shift=0)[0]
-    assert one_task_samples[fallback_index]["demo"] != one_task_samples[0]["demo"]
+    cross_indices = select_negative_subgoal_indices(
+        source_samples,
+        [0, 1],
+        negative_samples,
+        selection="cross_task",
+        seed=3,
+        same_task_min_filtered_distance=20,
+    )
+    for source_index, negative_index in zip([0, 1], cross_indices):
+        assert negative_samples[negative_index]["file"] != source_samples[source_index]["file"]
 
-    try:
-        select_wrong_subgoal_indices(one_task_samples[:2], [0], shift=0)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Expected same-demo-only negative selection to fail")
-    print("✓ wrong subgoal selection avoids the source demonstration")
+    balanced_samples = [
+        {"file": task_file, "demo": "demo_40", "filtered_timestep": index}
+        for task_file in ("task_a.hdf5", "task_b.hdf5")
+        for index in range(600)
+    ]
+    selected = select_balanced_sample_indices(balanced_samples, max_samples_per_task=500)
+    assert len(selected) == 1000
+    assert sum(balanced_samples[index]["file"] == "task_a.hdf5" for index in selected) == 500
+    assert sum(balanced_samples[index]["file"] == "task_b.hdf5" for index in selected) == 500
+    print("✓ negative pools are strong and per-task sampling is balanced")
+
+
+def test_checkpoint_action_bins_are_reused_exactly():
+    checkpoint_edges = torch.linspace(-1.0, 1.0, 7 * (ACTION_NUM_BINS + 1)).view(
+        7,
+        ACTION_NUM_BINS + 1,
+    )
+    config = SimpleNamespace(action_bin_edges=checkpoint_edges.tolist())
+    action_args = SimpleNamespace(
+        use_discrete_action_prediction=True,
+        use_action_percentile_bins=True,
+        require_checkpoint_action_bin_edges=True,
+        action_dim=7,
+    )
+    resolved = resolve_checkpoint_action_bin_edges(config, action_args)
+    assert torch.equal(resolved, checkpoint_edges)
+    saved_config = VILAUConfig(
+        demo_start_index=0,
+        demo_end_index=40,
+        require_checkpoint_action_bin_edges=True,
+    )
+    assert saved_config.demo_start_index == 0
+    assert saved_config.demo_end_index == 40
+    assert saved_config.require_checkpoint_action_bin_edges
+    print("✓ checkpoint action_bin_edges are reused without recomputation")
+
+
+def test_two_batch_prediction_contract_for_all_modes():
+    class FakeBackbone(torch.nn.Module):
+        def forward(self, inputs_embeds=None, **kwargs):
+            return SimpleNamespace(last_hidden_state=inputs_embeds)
+
+    class FakeEvaluationModel:
+        def __init__(self):
+            self.config = SimpleNamespace(
+                action_chunk_size=10,
+                action_dim=7,
+                use_hybrid_attention=True,
+                action_token_ids=list(range(ACTION_NUM_BINS)),
+            )
+            self.llm = SimpleNamespace(
+                model=FakeBackbone(),
+                lm_head=torch.nn.Linear(8, ACTION_NUM_BINS, bias=False),
+            )
+
+        def prepare_inputs_labels_for_multimodal(
+            self,
+            input_ids,
+            position_ids,
+            attention_mask,
+            past_key_values,
+            labels,
+            images,
+        ):
+            batch_size = input_ids.shape[0]
+            sequence_length = 72
+            inputs_embeds = torch.zeros(batch_size, sequence_length, 8)
+            mm_labels = torch.full((batch_size, sequence_length, 1), IGNORE_INDEX)
+            mm_labels[:, -70:, 0] = 0
+            mm_attention_mask = torch.ones(batch_size, sequence_length, dtype=torch.bool)
+            position_ids = torch.arange(sequence_length).unsqueeze(0).repeat(batch_size, 1)
+            return (
+                None,
+                position_ids,
+                mm_attention_mask,
+                None,
+                inputs_embeds,
+                mm_labels,
+            )
+
+        def encode_images(self, images, image_ids=None):
+            return torch.zeros(images.shape[0], 2, 8), None
+
+    model = FakeEvaluationModel()
+    for batch_size in (2, 1):
+        source_items = [
+            {
+                "observations": torch.zeros(3, 8, 8),
+                "subgoal_images": torch.ones(3, 8, 8),
+                "subgoal_timestep": 10,
+                "subgoal_filtered_timestep": 10,
+                "action_labels": torch.zeros(10, 7),
+                "timestep": 0,
+                "filtered_timestep": 0,
+            }
+            for _ in range(batch_size)
+        ]
+        negative_items = [
+            {
+                "subgoal_images": torch.full((3, 8, 8), 2.0),
+                "subgoal_timestep": 30,
+                "subgoal_filtered_timestep": 30,
+            }
+            for _ in range(batch_size)
+        ]
+        for mode in VALID_MODES:
+            mode_items = build_mode_items(
+                mode,
+                source_items,
+                negative_items,
+                negative_items,
+            )
+            batch = {
+                "input_ids": torch.zeros(batch_size, 72, dtype=torch.long),
+                "attention_mask": torch.ones(batch_size, 72, dtype=torch.bool),
+                "labels": torch.zeros(batch_size, 72, dtype=torch.long),
+                "images": torch.stack([item["observations"] for item in mode_items]),
+            }
+            if "subgoal_images" in mode_items[0]:
+                batch["subgoal_images"] = torch.stack(
+                    [item["subgoal_images"] for item in mode_items]
+                )
+            pred_bins, gt_bins = predict_training_batch_with_optional_subgoal(model, batch)
+            assert tuple(gt_bins.shape) == (batch_size, 10, 7)
+            pred_actions = pred_bins.float()
+            assert torch.isfinite(pred_actions).float().mean().item() == 1.0
+            validate_prediction_outputs(
+                mode,
+                pred_bins,
+                pred_actions,
+                batch_size=batch_size,
+                action_chunk_size=10,
+                action_dim=7,
+            )
+    print("✓ two batches satisfy the five-mode [B, 10, 7] finite contract")
 
 
 def test_dynamic_patch_weight_formula_covers_depth_counts():
@@ -603,8 +789,10 @@ if __name__ == "__main__":
     test_compute_visual_cot_loss_with_dynamic_change_weight()
     test_compute_visual_cot_loss_with_dynamic_change_threshold()
     test_visual_change_weighting_validation()
-    test_oracle_ablation_modes_follow_configured_offset()
-    test_wrong_subgoal_selection_avoids_same_demo()
+    test_oracle_ablation_modes_and_action_labels()
+    test_strong_negative_selection_and_balanced_samples()
+    test_checkpoint_action_bins_are_reused_exactly()
+    test_two_batch_prediction_contract_for_all_modes()
     test_dynamic_patch_weight_formula_covers_depth_counts()
     test_depth_transformer_can_be_trainable_independently()
     test_visual_cot_loss_updates_rqtransformer_parameters()

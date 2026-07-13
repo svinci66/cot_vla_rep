@@ -48,8 +48,13 @@ class VILAUConfig(PretrainedConfig):
         self.action_slot_token_ids = kwargs.pop("action_slot_token_ids", None)
         self.action_bin_edges = kwargs.pop("action_bin_edges", None)
         self.use_action_percentile_bins = kwargs.pop("use_action_percentile_bins", False)
+        self.require_checkpoint_action_bin_edges = kwargs.pop(
+            "require_checkpoint_action_bin_edges", False
+        )
         self.action_bin_low_percentile = kwargs.pop("action_bin_low_percentile", 1.0)
         self.action_bin_high_percentile = kwargs.pop("action_bin_high_percentile", 99.0)
+        self.demo_start_index = kwargs.pop("demo_start_index", 0)
+        self.demo_end_index = kwargs.pop("demo_end_index", None)
         self.use_hybrid_attention = kwargs.pop("use_hybrid_attention", False)
         self.use_visual_cot = kwargs.pop("use_visual_cot", False)
         self.subgoal_min_offset = kwargs.pop("subgoal_min_offset", 1)

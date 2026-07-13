@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 """Offline ablation for oracle-subgoal action conditioning.
 
-Evaluates the same selected LIBERO samples under three input modes:
+Evaluates the same selected LIBERO samples under five input modes:
 
 - no_subgoal: current observation + instruction only
-- oracle: current observation + correct GT future image at the configured offset
-- wrong: current observation + a GT future image from another task or demo
+- current_copy: current observation copied into the subgoal token block
+- oracle_t10: correct GT filtered t+10 image
+- same_task_wrong_t10: t+10 image from the same task but another demo
+- cross_task_wrong_t10: t+10 image from a different task
 """
 
 from __future__ import annotations
@@ -56,11 +58,19 @@ from vila_u.utils.hybrid_attention import (  # noqa: E402
 )
 
 
-VALID_MODES = ("no_subgoal", "oracle", "wrong")
+VALID_MODES = (
+    "no_subgoal",
+    "current_copy",
+    "oracle_t10",
+    "same_task_wrong_t10",
+    "cross_task_wrong_t10",
+)
 MODE_ALIASES = {
-    "oracle_t10": "oracle",
-    "wrong_t10": "wrong",
+    "oracle": "oracle_t10",
+    "wrong": "cross_task_wrong_t10",
+    "wrong_t10": "cross_task_wrong_t10",
 }
+NEGATIVE_MODES = {"same_task_wrong_t10", "cross_task_wrong_t10"}
 LOWER_IS_BETTER = {"mae", "mse", "first_step_mae", "gripper_mae", "gripper_mse"}
 
 
@@ -86,47 +96,88 @@ def parse_modes(value: str) -> list[str]:
     return modes
 
 
-def result_mode_name(mode: str, subgoal_offset: int) -> str:
-    if mode == "no_subgoal":
-        return mode
-    if mode in {"oracle", "wrong"}:
-        return f"{mode}_t{subgoal_offset}"
-    raise ValueError(f"Unsupported mode: {mode}")
-
-
-def select_wrong_subgoal_indices(
+def select_balanced_sample_indices(
     samples: list[dict[str, Any]],
-    selected_indices: list[int],
-    shift: int,
+    max_samples_per_task: int,
+    max_samples: int | None = None,
 ) -> list[int]:
-    """Choose deterministic negatives from another task, or at least another demo."""
-    all_indices = list(range(len(samples)))
-    wrong_indices = []
-    for selected_position, sample_index in enumerate(selected_indices):
-        sample = samples[sample_index]
-        different_task = [
-            index
-            for index in all_indices
-            if samples[index]["file"] != sample["file"]
-        ]
-        different_demo = [
-            index
-            for index in all_indices
-            if (
-                samples[index]["file"],
-                samples[index]["demo"],
+    if max_samples_per_task <= 0:
+        raise ValueError("max_samples_per_task must be positive")
+    if max_samples is not None and int(max_samples) <= 0:
+        raise ValueError("max_samples must be positive when provided")
+    indices_by_task: dict[str, list[int]] = defaultdict(list)
+    for index, sample in enumerate(samples):
+        indices_by_task[sample["file"]].append(index)
+    selected_indices = []
+    for task_file in sorted(indices_by_task):
+        selected_indices.extend(indices_by_task[task_file][:max_samples_per_task])
+    if max_samples is not None:
+        selected_indices = selected_indices[: int(max_samples)]
+    return selected_indices
+
+
+def select_negative_subgoal_indices(
+    source_samples: list[dict[str, Any]],
+    source_indices: list[int],
+    negative_samples: list[dict[str, Any]],
+    selection: str,
+    seed: int,
+    same_task_min_filtered_distance: int,
+) -> list[int]:
+    """Select deterministic same-task or cross-task negative subgoals."""
+    if same_task_min_filtered_distance < 0:
+        raise ValueError("same_task_min_filtered_distance must be non-negative")
+    indices_by_task: dict[str, list[int]] = defaultdict(list)
+    for index, sample in enumerate(negative_samples):
+        indices_by_task[sample["file"]].append(index)
+
+    selected_negative_indices = []
+    for source_index in source_indices:
+        source = source_samples[source_index]
+        if selection == "same_task":
+            candidates = [
+                index
+                for index in indices_by_task.get(source["file"], [])
+                if negative_samples[index]["demo"] != source["demo"]
+            ]
+            distant_candidates = [
+                index
+                for index in candidates
+                if abs(
+                    int(negative_samples[index]["filtered_timestep"])
+                    - int(source["filtered_timestep"])
+                )
+                >= int(same_task_min_filtered_distance)
+            ]
+            candidates = distant_candidates or candidates
+        elif selection == "cross_task":
+            candidate_task_files = sorted(
+                task_file
+                for task_file in indices_by_task
+                if task_file != source["file"] and indices_by_task[task_file]
             )
-            != (sample["file"], sample["demo"])
-        ]
-        candidates = different_task or different_demo
+            if not candidate_task_files:
+                candidates = []
+            else:
+                selection_key = int(source_index) + int(seed)
+                task_file = candidate_task_files[selection_key % len(candidate_task_files)]
+                task_candidates = indices_by_task[task_file]
+                candidates = [
+                    task_candidates[
+                        (selection_key // len(candidate_task_files)) % len(task_candidates)
+                    ]
+                ]
+        else:
+            raise ValueError(f"Unsupported negative selection: {selection}")
+
         if not candidates:
             raise ValueError(
-                "wrong mode requires at least two task files or demonstrations; "
-                f"no negative subgoal exists for {sample['file']}::{sample['demo']}"
+                f"{selection} negative requires an eligible candidate for "
+                f"{source['file']}::{source['demo']}"
             )
-        candidate_position = (selected_position + int(shift)) % len(candidates)
-        wrong_indices.append(candidates[candidate_position])
-    return wrong_indices
+        candidate_position = (int(source_index) + int(seed)) % len(candidates)
+        selected_negative_indices.append(candidates[candidate_position])
+    return selected_negative_indices
 
 
 def clone_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -137,13 +188,23 @@ def without_subgoal(item: dict[str, Any]) -> dict[str, Any]:
     cloned = clone_item(item)
     cloned.pop("subgoal_images", None)
     cloned.pop("subgoal_timestep", None)
+    cloned.pop("subgoal_filtered_timestep", None)
     return cloned
 
 
-def with_wrong_subgoal(item: dict[str, Any], wrong_item: dict[str, Any]) -> dict[str, Any]:
+def with_current_copy(item: dict[str, Any]) -> dict[str, Any]:
     cloned = clone_item(item)
-    cloned["subgoal_images"] = wrong_item["subgoal_images"]
-    cloned["subgoal_timestep"] = wrong_item["subgoal_timestep"]
+    cloned["subgoal_images"] = item["observations"]
+    cloned["subgoal_timestep"] = item.get("timestep", -1)
+    cloned["subgoal_filtered_timestep"] = item.get("filtered_timestep", -1)
+    return cloned
+
+
+def with_negative_subgoal(item: dict[str, Any], negative_item: dict[str, Any]) -> dict[str, Any]:
+    cloned = clone_item(item)
+    cloned["subgoal_images"] = negative_item["subgoal_images"]
+    cloned["subgoal_timestep"] = negative_item["subgoal_timestep"]
+    cloned["subgoal_filtered_timestep"] = negative_item["subgoal_filtered_timestep"]
     return cloned
 
 
@@ -234,6 +295,29 @@ def predict_training_batch_with_optional_subgoal(model, batch: dict[str, torch.T
         core_model.config.action_token_ids,
     ).view_as(pred_bins)
     return pred_bins, gt_bins
+
+
+def validate_prediction_outputs(
+    mode: str,
+    pred_bins: torch.Tensor,
+    pred_actions: torch.Tensor,
+    batch_size: int,
+    action_chunk_size: int,
+    action_dim: int,
+) -> None:
+    expected_shape = (batch_size, action_chunk_size, action_dim)
+    if tuple(pred_bins.shape) != expected_shape:
+        raise ValueError(
+            f"Mode {mode} returned pred_bins shape {tuple(pred_bins.shape)}, "
+            f"expected {expected_shape}"
+        )
+    if tuple(pred_actions.shape) != expected_shape:
+        raise ValueError(
+            f"Mode {mode} returned actions shape {tuple(pred_actions.shape)}, "
+            f"expected {expected_shape}"
+        )
+    if not torch.isfinite(pred_actions).all():
+        raise ValueError(f"Mode {mode} produced non-finite action predictions")
 
 
 def new_metric_store() -> dict[str, list[Any]]:
@@ -343,35 +427,44 @@ def summarize_metrics(store: dict[str, list[Any]]) -> dict[str, Any]:
 def build_mode_items(
     mode: str,
     batch_items: list[dict[str, Any]],
-    wrong_items: list[dict[str, Any]],
+    same_task_negative_items: list[dict[str, Any]],
+    cross_task_negative_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     if mode == "no_subgoal":
         return [without_subgoal(item) for item in batch_items]
-    if mode == "oracle":
+    if mode == "current_copy":
+        return [with_current_copy(item) for item in batch_items]
+    if mode == "oracle_t10":
         return [clone_item(item) for item in batch_items]
-    if mode == "wrong":
-        if len(wrong_items) != len(batch_items):
+    if mode == "same_task_wrong_t10":
+        if len(same_task_negative_items) != len(batch_items):
             raise ValueError(
-                "wrong mode requires one negative subgoal for every evaluated sample"
+                "same-task mode requires one negative subgoal per evaluated sample"
             )
         return [
-            with_wrong_subgoal(item, wrong_item)
-            for item, wrong_item in zip(batch_items, wrong_items)
+            with_negative_subgoal(item, negative_item)
+            for item, negative_item in zip(batch_items, same_task_negative_items)
+        ]
+    if mode == "cross_task_wrong_t10":
+        if len(cross_task_negative_items) != len(batch_items):
+            raise ValueError(
+                "cross-task mode requires one negative subgoal per evaluated sample"
+            )
+        return [
+            with_negative_subgoal(item, negative_item)
+            for item, negative_item in zip(batch_items, cross_task_negative_items)
         ]
     raise ValueError(f"Unsupported mode: {mode}")
 
 
-def comparison_summary(
-    summaries: dict[str, dict[str, Any]],
-    subgoal_offset: int,
-) -> dict[str, dict[str, Any]]:
+def comparison_summary(summaries: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     comparisons: dict[str, dict[str, Any]] = {}
-    oracle_mode = result_mode_name("oracle", subgoal_offset)
-    wrong_mode = result_mode_name("wrong", subgoal_offset)
     pairs = [
-        (oracle_mode, wrong_mode),
-        (oracle_mode, "no_subgoal"),
-        (wrong_mode, "no_subgoal"),
+        ("oracle_t10", "no_subgoal"),
+        ("oracle_t10", "current_copy"),
+        ("oracle_t10", "same_task_wrong_t10"),
+        ("oracle_t10", "cross_task_wrong_t10"),
+        ("current_copy", "no_subgoal"),
     ]
     metric_names = sorted({key for summary in summaries.values() for key in summary.keys()})
     for left, right in pairs:
@@ -399,7 +492,8 @@ def main() -> None:
     parser.add_argument("--device", default="cuda", help="cuda, cpu, or auto.")
     parser.add_argument("--model-dtype", default="bfloat16", choices=("float16", "bfloat16", "float32"))
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--max-samples", type=int, default=100)
+    parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--max-samples-per-task", type=int, default=500)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--model-max-length", type=int, default=None)
@@ -410,25 +504,23 @@ def main() -> None:
     parser.add_argument("--task-file-pattern", default=None)
     parser.add_argument("--max-task-files", type=int, default=None)
     parser.add_argument("--max-demos-per-task", type=int, default=None)
+    parser.add_argument("--demo-start-index", type=int, default=40)
+    parser.add_argument("--demo-end-index", type=int, default=50)
     parser.add_argument("--subgoal-offset", type=int, default=10)
     parser.add_argument(
         "--modes",
         type=parse_modes,
         default=list(VALID_MODES),
-        help="Comma-separated no_subgoal,oracle,wrong modes (legacy t10 aliases are accepted).",
+        help="Comma-separated experiment-1 modes (legacy oracle/wrong aliases are accepted).",
     )
-    parser.add_argument(
-        "--wrong-shift",
-        type=int,
-        default=None,
-        help="Deterministic offset within the eligible cross-task/cross-demo negative pool.",
-    )
+    parser.add_argument("--negative-seed", type=int, default=0)
+    parser.add_argument("--same-task-min-filtered-distance", type=int, default=20)
     parser.add_argument("--recompute-action-bin-edges", action="store_true")
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--save-records", action="store_true")
     args = parser.parse_args()
-    if args.subgoal_offset < 1:
-        parser.error("--subgoal-offset must be at least 1")
+    if args.subgoal_offset != 10:
+        parser.error("Experiment-1 t10 modes require --subgoal-offset 10")
 
     dtype_map = {
         "float16": torch.float16,
@@ -478,26 +570,64 @@ def main() -> None:
         subgoal_sampling_strategy="fixed",
         max_task_files=args.max_task_files,
         max_demos_per_task=args.max_demos_per_task,
+        demo_start_index=args.demo_start_index,
+        demo_end_index=args.demo_end_index,
         task_file=args.task_file,
         task_file_pattern=args.task_file_pattern,
         gripper_pause_threshold=args.gripper_pause_threshold,
     )
-    eval_count = min(int(args.max_samples), len(dataset))
-    if eval_count <= 0:
+    selected_indices = select_balanced_sample_indices(
+        dataset.samples,
+        max_samples_per_task=args.max_samples_per_task,
+        max_samples=args.max_samples,
+    )
+    if not selected_indices:
         raise ValueError("No samples available for evaluation")
-    selected_indices = list(range(eval_count))
-    wrong_shift = int(args.wrong_shift if args.wrong_shift is not None else max(1, eval_count // 2))
-    selected_wrong_indices = []
-    if "wrong" in args.modes:
-        selected_wrong_indices = select_wrong_subgoal_indices(
+    eval_count = len(selected_indices)
+
+    negative_dataset = None
+    same_task_negative_indices = []
+    cross_task_negative_indices = []
+    if any(mode in NEGATIVE_MODES for mode in args.modes):
+        negative_dataset = LiberoGoalDataset(
+            data_root=args.data_root,
+            image_processor=image_processor,
+            tokenizer=tokenizer,
+            action_chunk_size=action_chunk_size,
+            image_size=args.image_size,
+            remove_pause_intervals=args.remove_pause_intervals,
+            pause_threshold=args.pause_threshold,
+            include_subgoal_image=True,
+            subgoal_min_offset=args.subgoal_offset,
+            subgoal_max_offset=args.subgoal_offset,
+            subgoal_sampling_strategy="fixed",
+            max_demos_per_task=args.max_demos_per_task,
+            demo_start_index=args.demo_start_index,
+            demo_end_index=args.demo_end_index,
+            gripper_pause_threshold=args.gripper_pause_threshold,
+        )
+    if "same_task_wrong_t10" in args.modes:
+        if negative_dataset is None:
+            raise AssertionError("Negative dataset was not initialized")
+        same_task_negative_indices = select_negative_subgoal_indices(
             dataset.samples,
             selected_indices,
-            wrong_shift,
+            negative_dataset.samples,
+            selection="same_task",
+            seed=args.negative_seed,
+            same_task_min_filtered_distance=args.same_task_min_filtered_distance,
         )
-    mode_names = {
-        mode: result_mode_name(mode, args.subgoal_offset)
-        for mode in args.modes
-    }
+    if "cross_task_wrong_t10" in args.modes:
+        if negative_dataset is None:
+            raise AssertionError("Negative dataset was not initialized")
+        cross_task_negative_indices = select_negative_subgoal_indices(
+            dataset.samples,
+            selected_indices,
+            negative_dataset.samples,
+            selection="cross_task",
+            seed=args.negative_seed,
+            same_task_min_filtered_distance=args.same_task_min_filtered_distance,
+        )
 
     action_bin_edges = normalize_action_bin_edges(
         getattr(model.config, "action_bin_edges", None),
@@ -513,11 +643,24 @@ def main() -> None:
             pause_threshold=args.pause_threshold,
             max_task_files=args.max_task_files,
             max_demos_per_task=args.max_demos_per_task,
+            demo_start_index=args.demo_start_index,
+            demo_end_index=args.demo_end_index,
             task_file=args.task_file,
             task_file_pattern=args.task_file_pattern,
             gripper_pause_threshold=args.gripper_pause_threshold,
         )
         action_bin_edges = _compute_dataset_action_bin_edges_local(dataset, action_args)
+    if action_bin_edges is None:
+        raise ValueError(
+            "Experiment-1 evaluation requires action_bin_edges from the checkpoint; "
+            "use --recompute-action-bin-edges only for explicit diagnostics"
+        )
+    expected_bin_shape = (action_dim, ACTION_NUM_BINS + 1)
+    if tuple(action_bin_edges.shape) != expected_bin_shape:
+        raise ValueError(
+            f"Expected action_bin_edges shape {expected_bin_shape}, "
+            f"got {tuple(action_bin_edges.shape)}"
+        )
     model.config.action_bin_edges = action_bin_edges.cpu().tolist() if action_bin_edges is not None else None
 
     collator = DiscreteActionPredictionDataCollator(
@@ -547,9 +690,12 @@ def main() -> None:
     print(f"Resolved model path: {resolved_model_path}")
     print(f"Data root: {args.data_root}")
     print(f"Eval samples: {eval_count}/{len(dataset)}")
-    print(f"Modes: {', '.join(mode_names.values())}")
+    print(f"Samples per task: up to {args.max_samples_per_task}")
+    print(f"Modes: {', '.join(args.modes)}")
+    print(f"Demo range: [{args.demo_start_index}, {args.demo_end_index})")
     print(f"Subgoal offset: {args.subgoal_offset}")
-    print(f"Wrong shift: {wrong_shift}")
+    print(f"Negative seed: {args.negative_seed}")
+    print(f"Same-task minimum filtered distance: {args.same_task_min_filtered_distance}")
     print(f"Task file: {args.task_file}")
     print(f"Max demos per task: {args.max_demos_per_task}")
     print(f"Action bin edges: {'present' if action_bin_edges is not None else 'None'}")
@@ -560,19 +706,58 @@ def main() -> None:
     processed = 0
     for batch_items in tqdm(dataloader, total=len(dataloader)):
         cur_indices = selected_indices[processed : processed + len(batch_items)]
-        wrong_indices = selected_wrong_indices[processed : processed + len(batch_items)]
-        wrong_items = [dataset[index] for index in wrong_indices]
+        same_negative_batch_indices = same_task_negative_indices[
+            processed : processed + len(batch_items)
+        ]
+        cross_negative_batch_indices = cross_task_negative_indices[
+            processed : processed + len(batch_items)
+        ]
+        same_negative_items = (
+            [negative_dataset[index] for index in same_negative_batch_indices]
+            if same_negative_batch_indices
+            else []
+        )
+        cross_negative_items = (
+            [negative_dataset[index] for index in cross_negative_batch_indices]
+            if cross_negative_batch_indices
+            else []
+        )
+        expected_action_labels = torch.stack(
+            [item["action_labels"] for item in batch_items]
+        )
 
         for mode in args.modes:
-            mode_items = build_mode_items(mode, batch_items, wrong_items)
+            mode_items = build_mode_items(
+                mode,
+                batch_items,
+                same_negative_items,
+                cross_negative_items,
+            )
+            if mode == "current_copy":
+                for source_item, mode_item in zip(batch_items, mode_items):
+                    if not torch.equal(
+                        source_item["observations"],
+                        mode_item["subgoal_images"],
+                    ):
+                        raise AssertionError("current_copy must reuse observations exactly")
             batch = collator(mode_items)
+            if not torch.equal(batch["action_labels"], expected_action_labels):
+                raise AssertionError(f"Action labels changed in mode {mode}")
             batch = move_batch_to_device(batch, device)
             pred_bins, gt_bins = predict_training_batch_with_optional_subgoal(model, batch)
             pred_actions = undiscretize_action_bins(
                 pred_bins,
                 num_bins=ACTION_NUM_BINS,
-                bin_edges=action_bin_edges.to(pred_bins.device) if action_bin_edges is not None else None,
+                bin_edges=action_bin_edges.to(pred_bins.device),
             ).float()
+            validate_prediction_outputs(
+                mode,
+                pred_bins,
+                pred_actions,
+                batch_size=len(batch_items),
+                action_chunk_size=action_chunk_size,
+                action_dim=action_dim,
+            )
             gt_actions = batch["action_labels"].float()
             extend_metrics(metrics[mode], pred_bins, gt_bins, pred_actions, gt_actions)
 
@@ -587,10 +772,16 @@ def main() -> None:
                     if subgoal_timesteps is not None
                     else [None] * len(cur_indices)
                 )
+                subgoal_filtered_timesteps = batch.get("subgoal_filtered_timesteps")
+                subgoal_filtered_timesteps_np = (
+                    subgoal_filtered_timesteps.detach().cpu().numpy()
+                    if subgoal_filtered_timesteps is not None
+                    else [None] * len(cur_indices)
+                )
                 for item_offset, sample_index in enumerate(cur_indices):
                     sample = dataset.samples[sample_index]
                     record = {
-                        "mode": mode_names[mode],
+                        "mode": mode,
                         "index": sample_index,
                         "file": sample["file"],
                         "demo": sample["demo"],
@@ -601,24 +792,42 @@ def main() -> None:
                             if subgoal_timesteps_np[item_offset] is None
                             else int(subgoal_timesteps_np[item_offset])
                         ),
+                        "subgoal_filtered_timestep": (
+                            None
+                            if subgoal_filtered_timesteps_np[item_offset] is None
+                            else int(subgoal_filtered_timesteps_np[item_offset])
+                        ),
                         "prediction": pred_np[item_offset],
                         "ground_truth": gt_np[item_offset],
                         "pred_bins": pred_bins_np[item_offset],
                         "gt_bins": gt_bins_np[item_offset],
                     }
-                    if mode == "wrong":
-                        record["wrong_index"] = int(wrong_indices[item_offset])
-                        wrong_sample = dataset.samples[wrong_indices[item_offset]]
-                        record["wrong_file"] = wrong_sample["file"]
-                        record["wrong_demo"] = wrong_sample["demo"]
+                    if mode in NEGATIVE_MODES:
+                        if mode == "same_task_wrong_t10":
+                            negative_index = same_negative_batch_indices[item_offset]
+                            negative_item = same_negative_items[item_offset]
+                            negative_selection = "same_task"
+                        else:
+                            negative_index = cross_negative_batch_indices[item_offset]
+                            negative_item = cross_negative_items[item_offset]
+                            negative_selection = "cross_task"
+                        negative_sample = negative_dataset.samples[negative_index]
+                        record.update(
+                            {
+                                "negative_file": negative_sample["file"],
+                                "negative_demo": negative_sample["demo"],
+                                "negative_timestep": int(negative_item["subgoal_timestep"]),
+                                "negative_filtered_timestep": int(
+                                    negative_item["subgoal_filtered_timestep"]
+                                ),
+                                "negative_selection": negative_selection,
+                            }
+                        )
                     records.append(record)
         processed += len(batch_items)
 
-    summaries = {
-        mode_names[mode]: summarize_metrics(store)
-        for mode, store in metrics.items()
-    }
-    comparisons = comparison_summary(summaries, args.subgoal_offset)
+    summaries = {mode: summarize_metrics(store) for mode, store in metrics.items()}
+    comparisons = comparison_summary(summaries)
     output = {
         "summary": summaries,
         "comparisons": comparisons,
@@ -630,10 +839,13 @@ def main() -> None:
             "max_task_files": args.max_task_files,
             "max_demos_per_task": args.max_demos_per_task,
             "max_samples": args.max_samples,
-            "modes": list(mode_names.values()),
+            "max_samples_per_task": args.max_samples_per_task,
+            "modes": list(args.modes),
+            "demo_start_index": args.demo_start_index,
+            "demo_end_index": args.demo_end_index,
             "subgoal_offset": args.subgoal_offset,
-            "wrong_shift": wrong_shift,
-            "wrong_subgoal_pairing": "different_task_preferred_other_demo_required",
+            "negative_seed": args.negative_seed,
+            "same_task_min_filtered_distance": args.same_task_min_filtered_distance,
             "remove_pause_intervals": args.remove_pause_intervals,
             "pause_threshold": args.pause_threshold,
             "gripper_pause_threshold": args.gripper_pause_threshold,
@@ -653,10 +865,9 @@ def main() -> None:
         "gripper_transition_change_recall",
     ]
     for mode in args.modes:
-        mode_name = mode_names[mode]
-        print(f"  [{mode_name}]")
+        print(f"  [{mode}]")
         for metric in key_metrics:
-            print(f"    {metric} = {summaries[mode_name].get(metric)}")
+            print(f"    {metric} = {summaries[mode].get(metric)}")
     if comparisons:
         print("Comparisons")
         for name, values in comparisons.items():

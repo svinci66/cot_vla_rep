@@ -46,6 +46,8 @@ class LiberoGoalDataset(Dataset):
         subgoal_sampling_strategy: str = "fixed",
         max_task_files: Optional[int] = None,
         max_demos_per_task: Optional[int] = None,
+        demo_start_index: int = 0,
+        demo_end_index: Optional[int] = None,
         task_file: Optional[str] = None,
         task_file_pattern: Optional[str] = None,
         gripper_pause_threshold: float = 1e-6,
@@ -65,6 +67,8 @@ class LiberoGoalDataset(Dataset):
             subgoal_sampling_strategy: "fixed" uses subgoal_max_offset, "uniform" samples a random offset
             max_task_files: Optional limit on the number of HDF5 task files to load
             max_demos_per_task: Optional limit on demonstrations loaded per task file
+            demo_start_index: Inclusive numeric demo index to load
+            demo_end_index: Exclusive numeric demo index to load, or all remaining demos
             task_file: Optional exact HDF5 task filename to load
             task_file_pattern: Optional substring/regex used to select task files
             gripper_pause_threshold: Threshold for gripper action change when detecting pauses
@@ -90,6 +94,12 @@ class LiberoGoalDataset(Dataset):
         self.subgoal_sampling_strategy = subgoal_sampling_strategy
         self.max_task_files = max_task_files
         self.max_demos_per_task = max_demos_per_task
+        self.demo_start_index = int(demo_start_index)
+        self.demo_end_index = None if demo_end_index is None else int(demo_end_index)
+        if self.demo_start_index < 0:
+            raise ValueError("demo_start_index must be non-negative")
+        if self.demo_end_index is not None and self.demo_end_index <= self.demo_start_index:
+            raise ValueError("demo_end_index must be greater than demo_start_index")
         self.task_file = task_file
         self.task_file_pattern = task_file_pattern
         self.gripper_pause_threshold = gripper_pause_threshold
@@ -110,6 +120,30 @@ class LiberoGoalDataset(Dataset):
             print(f"  - Limited to first {max_task_files} task file(s)")
         if max_demos_per_task is not None:
             print(f"  - Limited to first {max_demos_per_task} demo(s) per task")
+        demo_end_label = "all" if self.demo_end_index is None else str(self.demo_end_index)
+        print(f"  - Demo Range: [{self.demo_start_index}, {demo_end_label})")
+        task_demo_counts = {
+            os.path.basename(task_file): set(demo_names)
+            for task_file, demo_names in self.loaded_demo_names_by_task.items()
+        }
+        task_sample_counts = {
+            os.path.basename(task_file): 0
+            for task_file in self.loaded_demo_names_by_task
+        }
+        for sample in self.samples:
+            task_name = os.path.basename(sample["file"])
+            task_sample_counts[task_name] = task_sample_counts.get(task_name, 0) + 1
+        demo_counts = [len(demos) for demos in task_demo_counts.values()]
+        if demo_counts and len(set(demo_counts)) == 1:
+            demos_per_task = str(demo_counts[0])
+        elif demo_counts:
+            demos_per_task = f"{min(demo_counts)}-{max(demo_counts)}"
+        else:
+            demos_per_task = "0"
+        print(f"  - Tasks: {len(task_sample_counts)}")
+        print(f"  - Demos per task: {demos_per_task}")
+        print(f"  - Valid samples per task: {task_sample_counts}")
+        print(f"  - Total valid samples: {len(self.samples)}")
         if task_file is not None:
             print(f"  - Task file: {task_file}")
         if task_file_pattern is not None:
@@ -121,6 +155,13 @@ class LiberoGoalDataset(Dataset):
             int(part) if part.isdigit() else part.lower()
             for part in re.split(r"(\d+)", value)
         ]
+
+    @staticmethod
+    def demo_index(name: str) -> int:
+        match = re.fullmatch(r"demo_(\d+)", name)
+        if match is None:
+            raise ValueError(f"Invalid demo name: {name}")
+        return int(match.group(1))
 
     def _is_pause(self, action: np.ndarray, previous_action: Optional[np.ndarray] = None) -> bool:
         """
@@ -173,6 +214,7 @@ class LiberoGoalDataset(Dataset):
     def _build_index(self):
         """Build dataset index with pause removal"""
         samples = []
+        self.loaded_demo_names_by_task = {}
 
         # Traverse all .hdf5 files
         filenames = [
@@ -212,9 +254,19 @@ class LiberoGoalDataset(Dataset):
                 instruction = problem_info['language_instruction']
 
                 # Traverse all demonstrations
-                demo_names = sorted(f['data'].keys(), key=self._natural_key)
+                demo_names = sorted(f['data'].keys(), key=self.demo_index)
+                demo_names = [
+                    name
+                    for name in demo_names
+                    if self.demo_start_index <= self.demo_index(name)
+                    and (
+                        self.demo_end_index is None
+                        or self.demo_index(name) < self.demo_end_index
+                    )
+                ]
                 if self.max_demos_per_task is not None:
                     demo_names = demo_names[: int(self.max_demos_per_task)]
+                self.loaded_demo_names_by_task[filepath] = tuple(demo_names)
                 for demo_name in demo_names:
                     demo = f['data'][demo_name]
 
@@ -224,17 +276,22 @@ class LiberoGoalDataset(Dataset):
 
                     if self.remove_pause_intervals:
                         # Remove pauses
-                        filtered_actions = self._remove_pauses(all_actions)
-                        num_samples = len(filtered_actions)
-
-                        # Build mapping from filtered index to original index
                         non_pause_indices = self._non_pause_indices(all_actions)
+                        num_samples = len(non_pause_indices)
                     else:
                         num_samples = len(all_actions)
                         non_pause_indices = list(range(num_samples))
 
-                    # Create samples for valid starting positions
-                    for filtered_t in range(num_samples - self.action_chunk_size + 1):
+                    # Require a complete action chunk and, when requested, a real
+                    # future subgoal rather than clamping to the final frame.
+                    required_future_delta = self.action_chunk_size - 1
+                    if self.include_subgoal_image:
+                        required_future_delta = max(
+                            required_future_delta,
+                            self.subgoal_max_offset,
+                        )
+                    num_valid_starts = max(0, num_samples - required_future_delta)
+                    for filtered_t in range(num_valid_starts):
                         # Get original timestep indices
                         original_t = non_pause_indices[filtered_t]
 
@@ -263,7 +320,7 @@ class LiberoGoalDataset(Dataset):
             size={'height': self.image_size, 'width': self.image_size},
         )['pixel_values'].squeeze(0)
 
-    def _sample_subgoal_timestep(self, sample) -> int:
+    def _sample_subgoal_indices(self, sample) -> tuple[int, int]:
         if self.subgoal_sampling_strategy == "fixed":
             offset = self.subgoal_max_offset
         else:
@@ -272,11 +329,27 @@ class LiberoGoalDataset(Dataset):
         if self.remove_pause_intervals:
             non_pause_indices = sample['non_pause_indices']
             filtered_t = sample['filtered_timestep']
-            target_filtered_t = min(filtered_t + offset, len(non_pause_indices) - 1)
-            return int(non_pause_indices[target_filtered_t])
+            target_filtered_t = filtered_t + offset
+            if target_filtered_t >= len(non_pause_indices):
+                raise IndexError(
+                    "Subgoal filtered timestep is outside the trajectory: "
+                    f"start={filtered_t}, offset={offset}, "
+                    f"filtered_length={len(non_pause_indices)}"
+                )
+            return int(non_pause_indices[target_filtered_t]), int(target_filtered_t)
 
-        final_timestep = max(0, sample['num_frames'] - 1)
-        return min(sample['timestep'] + offset, final_timestep)
+        target_timestep = sample['timestep'] + offset
+        if target_timestep >= sample['num_frames']:
+            raise IndexError(
+                "Subgoal timestep is outside the trajectory: "
+                f"start={sample['timestep']}, offset={offset}, "
+                f"num_frames={sample['num_frames']}"
+            )
+        return int(target_timestep), int(sample['filtered_timestep'] + offset)
+
+    def _sample_subgoal_timestep(self, sample) -> int:
+        subgoal_timestep, _ = self._sample_subgoal_indices(sample)
+        return subgoal_timestep
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
@@ -291,8 +364,9 @@ class LiberoGoalDataset(Dataset):
 
             subgoal_tensor = None
             subgoal_timestep = None
+            subgoal_filtered_timestep = None
             if self.include_subgoal_image:
-                subgoal_timestep = self._sample_subgoal_timestep(sample)
+                subgoal_timestep, subgoal_filtered_timestep = self._sample_subgoal_indices(sample)
                 subgoal_rgb = demo['obs/agentview_rgb'][subgoal_timestep]
                 subgoal_tensor = self._preprocess_rgb(subgoal_rgb)  # [3, 256, 256]
 
@@ -316,6 +390,14 @@ class LiberoGoalDataset(Dataset):
                 actions = demo['actions'][t : t + self.action_chunk_size]  # [chunk, 7]
                 previous_action = demo['actions'][t - 1] if t > 0 else actions[0]
 
+            if len(actions) != self.action_chunk_size:
+                raise IndexError(
+                    "Incomplete action chunk escaped dataset indexing: "
+                    f"expected={self.action_chunk_size}, got={len(actions)}, "
+                    f"file={sample['file']}, demo={sample['demo']}, "
+                    f"filtered_timestep={sample['filtered_timestep']}"
+                )
+
             # Convert LIBERO raw gripper convention (-1=open, +1=close) to
             # OpenVLA-style model action convention (+1=open, -1=close).
             actions = libero_raw_actions_to_model_actions(actions)
@@ -328,10 +410,15 @@ class LiberoGoalDataset(Dataset):
             'instructions': sample['instruction'],  # str
             'action_labels': action_tensor,  # [chunk_size, 7]
             'previous_action_label': previous_action_tensor,  # [7]
+            'file': sample['file'],
+            'demo': sample['demo'],
+            'timestep': int(sample['timestep']),
+            'filtered_timestep': int(sample['filtered_timestep']),
         }
         if self.include_subgoal_image:
             item['subgoal_images'] = subgoal_tensor
             item['subgoal_timestep'] = subgoal_timestep
+            item['subgoal_filtered_timestep'] = subgoal_filtered_timestep
         return item
 
 
@@ -359,6 +446,11 @@ def collate_fn(batch):
             [item['subgoal_timestep'] for item in batch],
             dtype=torch.long,
         )
+        if 'subgoal_filtered_timestep' in batch[0]:
+            output['subgoal_filtered_timesteps'] = torch.tensor(
+                [item['subgoal_filtered_timestep'] for item in batch],
+                dtype=torch.long,
+            )
     return output
 
 

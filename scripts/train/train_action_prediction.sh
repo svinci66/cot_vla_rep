@@ -34,6 +34,7 @@ IMAGE_SIZE=${IMAGE_SIZE:-256}
 ACTION_CHUNK_SIZE=${ACTION_CHUNK_SIZE:-10}
 ACTION_DIM=${ACTION_DIM:-7}
 USE_ACTION_PERCENTILE_BINS=${USE_ACTION_PERCENTILE_BINS:-False}
+REQUIRE_CHECKPOINT_ACTION_BIN_EDGES=${REQUIRE_CHECKPOINT_ACTION_BIN_EDGES:-False}
 ACTION_BIN_LOW_PERCENTILE=${ACTION_BIN_LOW_PERCENTILE:-1.0}
 ACTION_BIN_HIGH_PERCENTILE=${ACTION_BIN_HIGH_PERCENTILE:-99.0}
 REMOVE_PAUSE_INTERVALS=${REMOVE_PAUSE_INTERVALS:-True}
@@ -41,6 +42,8 @@ PAUSE_THRESHOLD=${PAUSE_THRESHOLD:-0.01}
 GRIPPER_PAUSE_THRESHOLD=${GRIPPER_PAUSE_THRESHOLD:-1e-6}
 MAX_TASK_FILES=${MAX_TASK_FILES:-}
 MAX_DEMOS_PER_TASK=${MAX_DEMOS_PER_TASK:-}
+DEMO_START_INDEX=${DEMO_START_INDEX:-0}
+DEMO_END_INDEX=${DEMO_END_INDEX:-}
 TASK_FILE=${TASK_FILE:-}
 TASK_FILE_PATTERN=${TASK_FILE_PATTERN:-}
 REPORT_TO=${REPORT_TO:-wandb}
@@ -237,10 +240,12 @@ echo "  Effective Batch Size: $effective_bs"
 echo "  Image Size: $IMAGE_SIZE"
 echo "  Action Chunk Size: $ACTION_CHUNK_SIZE"
 echo "  Action Percentile Bins: $USE_ACTION_PERCENTILE_BINS ($ACTION_BIN_LOW_PERCENTILE-$ACTION_BIN_HIGH_PERCENTILE)"
+echo "  Require Checkpoint Action Bins: $REQUIRE_CHECKPOINT_ACTION_BIN_EDGES"
 echo "  Task File: ${TASK_FILE:-auto}"
 echo "  Task File Pattern: ${TASK_FILE_PATTERN:-none}"
 echo "  Max Task Files: ${MAX_TASK_FILES:-all}"
 echo "  Max Demos Per Task: ${MAX_DEMOS_PER_TASK:-all}"
+echo "  Demo Range: [$DEMO_START_INDEX, ${DEMO_END_INDEX:-all})"
 echo "  Gripper Pause Threshold: $GRIPPER_PAUSE_THRESHOLD"
 echo "  Suppress FutureWarning: $SUPPRESS_FUTURE_WARNING"
 echo "  Attention Backend: $ATTN_IMPLEMENTATION"
@@ -338,11 +343,13 @@ train_args=(
     --action_chunk_size "$ACTION_CHUNK_SIZE"
     --action_dim "$ACTION_DIM"
     --use_action_percentile_bins "$USE_ACTION_PERCENTILE_BINS"
+    --require_checkpoint_action_bin_edges "$REQUIRE_CHECKPOINT_ACTION_BIN_EDGES"
     --action_bin_low_percentile "$ACTION_BIN_LOW_PERCENTILE"
     --action_bin_high_percentile "$ACTION_BIN_HIGH_PERCENTILE"
     --remove_pause_intervals "$REMOVE_PAUSE_INTERVALS"
     --pause_threshold "$PAUSE_THRESHOLD"
     --gripper_pause_threshold "$GRIPPER_PAUSE_THRESHOLD"
+    --demo_start_index "$DEMO_START_INDEX"
 )
 
 if [ -n "$TASK_FILE" ]; then
@@ -359,6 +366,10 @@ fi
 
 if [ -n "$MAX_DEMOS_PER_TASK" ]; then
     train_args+=(--max_demos_per_task "$MAX_DEMOS_PER_TASK")
+fi
+
+if [ -n "$DEMO_END_INDEX" ]; then
+    train_args+=(--demo_end_index "$DEMO_END_INDEX")
 fi
 
 if [ "$USE_DEEPSPEED" = "True" ] || [ "$USE_DEEPSPEED" = "true" ]; then
