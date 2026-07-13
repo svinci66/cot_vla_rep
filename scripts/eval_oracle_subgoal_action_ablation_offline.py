@@ -696,6 +696,8 @@ def main() -> None:
     print(f"Subgoal offset: {args.subgoal_offset}")
     print(f"Negative seed: {args.negative_seed}")
     print(f"Same-task minimum filtered distance: {args.same_task_min_filtered_distance}")
+    if "cross_task_wrong_t10" in args.modes:
+        print("Wrong pairing: cross_task")
     print(f"Task file: {args.task_file}")
     print(f"Max demos per task: {args.max_demos_per_task}")
     print(f"Action bin edges: {'present' if action_bin_edges is not None else 'None'}")
@@ -812,6 +814,13 @@ def main() -> None:
                             negative_item = cross_negative_items[item_offset]
                             negative_selection = "cross_task"
                         negative_sample = negative_dataset.samples[negative_index]
+                        if (
+                            negative_selection == "cross_task"
+                            and negative_sample["file"] == sample["file"]
+                        ):
+                            raise AssertionError(
+                                "cross_task wrong pairing must satisfy wrong_file != file"
+                            )
                         record.update(
                             {
                                 "negative_file": negative_sample["file"],
@@ -823,6 +832,9 @@ def main() -> None:
                                 "negative_selection": negative_selection,
                             }
                         )
+                        if negative_selection == "cross_task":
+                            record["wrong_pairing"] = "cross_task"
+                            record["wrong_file"] = negative_sample["file"]
                     records.append(record)
         processed += len(batch_items)
 
@@ -846,6 +858,9 @@ def main() -> None:
             "subgoal_offset": args.subgoal_offset,
             "negative_seed": args.negative_seed,
             "same_task_min_filtered_distance": args.same_task_min_filtered_distance,
+            "wrong_pairing": (
+                "cross_task" if "cross_task_wrong_t10" in args.modes else None
+            ),
             "remove_pause_intervals": args.remove_pause_intervals,
             "pause_threshold": args.pause_threshold,
             "gripper_pause_threshold": args.gripper_pause_threshold,
